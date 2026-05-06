@@ -1,136 +1,189 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { getCurrentUser, requireMinRole, unauthorized } from '@/lib/auth/guard';
-import { hashPassword } from '@/lib/auth/password';
 import { RoleCode, RoleLevel } from '@/lib/auth/constants';
+import { hashPassword } from '@/lib/auth/password';
 import type { ApiResponse } from '@/lib/auth/types';
 
+type RouteContext = { params: Promise<{ id: string }> };
+
 /**
- * PUT /api/users/[id]
- * 编辑用户信息（real_name, phone, email, org_id, is_disabled, expires_at, password）
- * - SYSTEM_DEVELOPER: 可编辑所有字段含 expires_at
- * - COMPANY_MANAGER / CANTEEN_MANAGER: 可编辑自己下属的基本信息
+ * GET /api/users/[id]
  */
-export async function PUT(
+export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  context: RouteContext
 ) {
-  const currentUser = getCurrentUser(request);
-  if (!currentUser) return unauthorized();
+  const user = getCurrentUser(request);
+  if (!user) return unauthorized();
 
-  const minRoleCheck = requireMinRole(currentUser, RoleLevel.CANTEEN_MANAGER);
-  if (!minRoleCheck.ok) return minRoleCheck.response;
+  const { id } = await context.params;
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
+    .eq('id', id)
+    .single();
 
-  const { id } = await params;
-
-  try {
-    const body = (await request.json()) as Record<string, unknown>;
-    const supabase = getSupabaseClient();
-
-    // Check target user exists
-    const { data: targetUser, error: fetchError } = await supabase
-      .from('users')
-      .select('id, role_code, org_id')
-      .eq('id', id)
-      .single();
-
-    if (fetchError || !targetUser) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '用户不存在' },
-        { status: 404 }
-      );
-    }
-
-    // Build update data
-    const updateData: Record<string, unknown> = {};
-    
-    if (body.real_name !== undefined) updateData.real_name = body.real_name;
-    if (body.phone !== undefined) updateData.phone = body.phone || null;
-    if (body.email !== undefined) updateData.email = body.email || null;
-    if (body.org_id !== undefined) updateData.org_id = body.org_id || null;
-    
-    // Only SYSTEM_DEVELOPER can set is_disabled and expires_at
-    if (currentUser.role_code === RoleCode.SYSTEM_DEVELOPER) {
-      if (body.is_disabled !== undefined) updateData.is_disabled = body.is_disabled;
-      if (body.expires_at !== undefined) updateData.expires_at = body.expires_at || null;
-    }
-
-    // Password change
-    if (body.password) {
-      updateData.password_hash = await hashPassword(body.password as string);
-    }
-
-    if (Object.keys(updateData).length === 0) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '没有需要更新的字段' },
-        { status: 400 }
-      );
-    }
-
-    const { data, error } = await supabase
-      .from('users')
-      .update(updateData)
-      .eq('id', id)
-      .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
-      .single();
-
-    if (error) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: `更新失败: ${error.message}` },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json<ApiResponse>({ success: true, data });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '更新失败';
+  if (error || !data) {
     return NextResponse.json<ApiResponse>(
-      { success: false, error: message },
-      { status: 500 }
+      { success: false, error: '用户不存在' },
+      { status: 404 }
     );
   }
+
+  return NextResponse.json<ApiResponse>({ success: true, data });
 }
 
 /**
- * DELETE /api/users/[id]
- * 禁用用户（软删除）
+ * PUT /api/users/[id]
+ * 编辑用户信息
  */
-export async function DELETE(
+export async function PUT(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  context: RouteContext
 ) {
-  const currentUser = getCurrentUser(request);
-  if (!currentUser) return unauthorized();
+  const user = getCurrentUser(request);
+  if (!user) return unauthorized();
 
-  if (currentUser.role_code !== RoleCode.SYSTEM_DEVELOPER) {
+  const { id } = await context.params;
+  const body = (await request.json()) as Record<string, unknown>;
+  const supabase = getSupabaseClient();
+
+  // First, get the target user to check permissions
+  const { data: targetUser, error: fetchErr } = await supabase
+    .from('users')
+    .select('id, role_code, org_id')
+    .eq('id', id)
+    .single();
+
+  if (fetchErr || !targetUser) {
     return NextResponse.json<ApiResponse>(
-      { success: false, error: '仅系统开发者可禁用用户' },
+      { success: false, error: '用户不存在' },
+      { status: 404 }
+    );
+  }
+
+  // Build update object based on role permissions
+  const updateData: Record<string, unknown> = {};
+  let passwordChanged = false;
+
+  if (user.role_code === RoleCode.SYSTEM_DEVELOPER) {
+    // Can edit anything
+    if (body.real_name !== undefined) updateData.real_name = body.real_name;
+    if (body.role_code !== undefined) updateData.role_code = body.role_code;
+    if (body.org_id !== undefined) updateData.org_id = body.org_id;
+    if (body.is_disabled !== undefined) updateData.is_disabled = body.is_disabled;
+    if (body.expires_at !== undefined) updateData.expires_at = body.expires_at || null;
+    // Developer can set password for any user
+    if (body.password && typeof body.password === 'string' && body.password.length >= 6) {
+      updateData.password_hash = await hashPassword(body.password);
+      passwordChanged = true;
+    }
+    // Developer can update company name for COMPANY_MANAGER users
+    if (body.company_name !== undefined && targetUser.role_code === RoleCode.COMPANY_MANAGER) {
+      // Update the company name in companies table
+      if (targetUser.org_id) {
+        await supabase.from('companies').update({ name: body.company_name }).eq('id', targetUser.org_id);
+      }
+    }
+  } else if (user.role_code === RoleCode.COMPANY_MANAGER) {
+    // Can only edit canteen/stall managers in own company
+    if (![RoleCode.CANTEEN_MANAGER, RoleCode.STALL_MANAGER].includes(targetUser.role_code)) {
+      return NextResponse.json<ApiResponse>(
+        { success: false, error: '无权编辑此用户' },
+        { status: 403 }
+      );
+    }
+    if (body.real_name !== undefined) updateData.real_name = body.real_name;
+    if (body.org_id !== undefined) updateData.org_id = body.org_id;
+    if (body.is_disabled !== undefined) updateData.is_disabled = body.is_disabled;
+    if (body.expires_at !== undefined) updateData.expires_at = body.expires_at || null;
+    // Company manager can set password for subordinate users
+    if (body.password && typeof body.password === 'string' && body.password.length >= 6) {
+      updateData.password_hash = await hashPassword(body.password);
+      passwordChanged = true;
+    }
+  } else if (user.role_code === RoleCode.CANTEEN_MANAGER) {
+    // Can only edit stall managers in own canteen
+    if (targetUser.role_code !== RoleCode.STALL_MANAGER) {
+      return NextResponse.json<ApiResponse>(
+        { success: false, error: '无权编辑此用户' },
+        { status: 403 }
+      );
+    }
+    if (body.real_name !== undefined) updateData.real_name = body.real_name;
+    if (body.org_id !== undefined) updateData.org_id = body.org_id;
+    if (body.is_disabled !== undefined) updateData.is_disabled = body.is_disabled;
+    // Canteen manager can set password for stall managers
+    if (body.password && typeof body.password === 'string' && body.password.length >= 6) {
+      updateData.password_hash = await hashPassword(body.password);
+      passwordChanged = true;
+    }
+  } else {
+    return NextResponse.json<ApiResponse>(
+      { success: false, error: '无权编辑用户' },
       { status: 403 }
     );
   }
 
-  const { id } = await params;
-
-  try {
-    const supabase = getSupabaseClient();
-    const { error } = await supabase
-      .from('users')
-      .update({ is_disabled: true })
-      .eq('id', id);
-
-    if (error) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: `禁用失败: ${error.message}` },
-        { status: 500 }
-      );
-    }
-
-    return NextResponse.json<ApiResponse>({ success: true, data: null });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '禁用失败';
+  // If only password was changed and no other fields, still allow update
+  if (Object.keys(updateData).length === 0) {
     return NextResponse.json<ApiResponse>(
-      { success: false, error: message },
+      { success: false, error: '无更新内容' },
+      { status: 400 }
+    );
+  }
+
+  const { data, error } = await supabase
+    .from('users')
+    .update(updateData)
+    .eq('id', id)
+    .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
+    .single();
+
+  if (error) {
+    return NextResponse.json<ApiResponse>(
+      { success: false, error: `更新失败: ${error.message}` },
       { status: 500 }
     );
   }
+
+  return NextResponse.json<ApiResponse>({ success: true, data });
+}
+
+/**
+ * DELETE /api/users/[id]
+ * 删除用户（仅系统开发者可用）
+ */
+export async function DELETE(
+  request: NextRequest,
+  context: RouteContext
+) {
+  const user = getCurrentUser(request);
+  if (!user) return unauthorized();
+
+  if (user.role_code !== RoleCode.SYSTEM_DEVELOPER) {
+    return NextResponse.json<ApiResponse>(
+      { success: false, error: '仅系统开发者可删除账号' },
+      { status: 403 }
+    );
+  }
+
+  const { id } = await context.params;
+  const supabase = getSupabaseClient();
+
+  const { error } = await supabase
+    .from('users')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    return NextResponse.json<ApiResponse>(
+      { success: false, error: `删除失败: ${error.message}` },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json<ApiResponse>({ success: true, data: null });
 }

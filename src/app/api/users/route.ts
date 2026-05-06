@@ -1,115 +1,109 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, requireMinRole, unauthorized } from '@/lib/auth/guard';
+import { getCurrentUser, requireMinRole, unauthorized } from '@/lib/auth/guard';
 import { hashPassword } from '@/lib/auth/password';
-import { RoleCode, RoleLevel, CAN_MANAGE_CANTEEN } from '@/lib/auth/constants';
-import type { ApiResponse, DbUser } from '@/lib/auth/types';
-
-interface CreateUserRequest {
-  username: string;
-  password: string;
-  real_name: string;
-  role_code: string;
-  phone?: string;
-  email?: string;
-  org_id?: string;
-}
+import { RoleCode, RoleLevel, DEFAULT_PASSWORD } from '@/lib/auth/constants';
+import type { ApiResponse } from '@/lib/auth/types';
 
 /**
- * POST /api/users
- * 创建用户
+ * GET /api/users
+ * 获取用户列表（按权限过滤）
  */
-export async function POST(request: NextRequest) {
-  const currentUser = getCurrentUser(request);
-  if (!currentUser) return unauthorized();
-
-  const minRoleCheck = requireMinRole(currentUser, RoleLevel.CANTEEN_MANAGER);
-  if (!minRoleCheck.ok) return minRoleCheck.response;
+export async function GET(request: NextRequest) {
+  const user = getCurrentUser(request);
+  if (!user) return unauthorized();
 
   try {
-    const body = (await request.json()) as CreateUserRequest;
+    const supabase = getSupabaseClient();
+    const { searchParams } = new URL(request.url);
+    const roleCode = searchParams.get('role_code');
 
-    if (!body.username?.trim() || !body.password || !body.real_name?.trim() || !body.role_code) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '用户名、密码、姓名、角色不能为空' },
-        { status: 400 }
-      );
-    }
-
-    const validRoles = ['COMPANY_MANAGER', 'CANTEEN_MANAGER', 'STALL_MANAGER', 'REGULAR_USER'];
-    if (currentUser.role_code !== RoleCode.SYSTEM_DEVELOPER && !validRoles.includes(body.role_code)) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '无权创建该角色的用户' },
-        { status: 403 }
-      );
-    }
-
-    if (currentUser.role_code === RoleCode.COMPANY_MANAGER && !['CANTEEN_MANAGER', 'STALL_MANAGER'].includes(body.role_code)) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '公司负责人只能创建食堂负责人和档口负责人' },
-        { status: 403 }
-      );
-    }
-
-    if (currentUser.role_code === RoleCode.CANTEEN_MANAGER && body.role_code !== 'STALL_MANAGER') {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '食堂负责人只能创建档口负责人' },
-        { status: 403 }
-      );
-    }
-
-    const client = getSupabaseClient();
-
-    const { data: existing, error: checkError } = await client
+    let query = supabase
       .from('users')
-      .select('id')
-      .eq('username', body.username.trim())
-      .maybeSingle();
-
-    if (checkError) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: `查询失败: ${checkError.message}` },
-        { status: 500 }
-      );
-    }
-
-    if (existing) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '用户名已存在' },
-        { status: 409 }
-      );
-    }
-
-    const passwordHash = await hashPassword(body.password);
-    const insertData: Record<string, unknown> = {
-      username: body.username.trim(),
-      password_hash: passwordHash,
-      real_name: body.real_name.trim(),
-      role_code: body.role_code,
-    };
-    if (body.phone) insertData.phone = body.phone;
-    if (body.email) insertData.email = body.email;
-    if (body.org_id) insertData.org_id = body.org_id;
-
-    const { data, error } = await client
-      .from('users')
-      .insert(insertData)
       .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
-      .single();
+      .order('created_at', { ascending: false });
+
+    if (roleCode) {
+      query = query.eq('role_code', roleCode);
+    }
+
+    // Role-based filtering
+    if (user.role_code === RoleCode.SYSTEM_DEVELOPER) {
+      // Can see all users, optional role_code filter already applied above
+    } else if (user.role_code === RoleCode.COMPANY_MANAGER) {
+      // Can only see users in own company
+      // Need to find canteens under this company first, then find users
+      const { data: companyCanteens } = await supabase
+        .from('canteens')
+        .select('id')
+        .eq('company_id', user.org_id);
+      const canteenIds = (companyCanteens || []).map((c: { id: string }) => c.id);
+
+      // Also find stalls under those canteens
+      let stallIds: string[] = [];
+      if (canteenIds.length > 0) {
+        const { data: canteenStalls } = await supabase
+          .from('stalls')
+          .select('id')
+          .in('canteen_id', canteenIds);
+        stallIds = (canteenStalls || []).map((s: { id: string }) => s.id);
+      }
+
+      const orgIds = [...canteenIds, ...stallIds];
+      if (orgIds.length === 0) {
+        return NextResponse.json<ApiResponse>({ success: true, data: [] });
+      }
+      query = query.in('org_id', orgIds).in('role_code', [RoleCode.CANTEEN_MANAGER, RoleCode.STALL_MANAGER]);
+    } else if (user.role_code === RoleCode.CANTEEN_MANAGER) {
+      // Can only see stall managers in own canteen
+      // Also find stalls under this canteen
+      const { data: canteenStalls } = await supabase
+        .from('stalls')
+        .select('id')
+        .eq('canteen_id', user.org_id);
+      const stallIds = (canteenStalls || []).map((s: { id: string }) => s.id);
+      const orgIds = [user.org_id, ...stallIds];
+      query = query.in('org_id', orgIds).eq('role_code', RoleCode.STALL_MANAGER);
+    } else {
+      return NextResponse.json<ApiResponse>(
+        { success: false, error: '无权限' },
+        { status: 403 }
+      );
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       return NextResponse.json<ApiResponse>(
-        { success: false, error: `创建用户失败: ${error.message}` },
+        { success: false, error: `查询失败: ${error.message}` },
         { status: 500 }
       );
     }
 
-    return NextResponse.json<ApiResponse>(
-      { success: true, data: data as DbUser },
-      { status: 201 }
-    );
+    // For SYSTEM_DEVELOPER, also fetch company names for COMPANY_MANAGER users
+    let enrichedData: Record<string, unknown>[] = (data || []) as Record<string, unknown>[];
+    if (user.role_code === RoleCode.SYSTEM_DEVELOPER && enrichedData.length > 0) {
+      const companyManagerIds = enrichedData
+        .filter((u: Record<string, unknown>) => u.role_code === RoleCode.COMPANY_MANAGER && u.org_id)
+        .map((u: Record<string, unknown>) => u.org_id as string);
+
+      if (companyManagerIds.length > 0) {
+        const { data: companies } = await supabase
+          .from('companies')
+          .select('id, name')
+          .in('id', companyManagerIds);
+
+        const companyMap = new Map((companies || []).map((c: { id: string; name: string }) => [c.id, c.name]));
+        enrichedData = enrichedData.map((u: Record<string, unknown>) => ({
+          ...u,
+          company_name: u.role_code === RoleCode.COMPANY_MANAGER && u.org_id ? companyMap.get(u.org_id as string) || null : null,
+        }));
+      }
+    }
+
+    return NextResponse.json<ApiResponse>({ success: true, data: enrichedData });
   } catch (err) {
-    const message = err instanceof Error ? err.message : '创建用户失败';
+    const message = err instanceof Error ? err.message : '查询失败';
     return NextResponse.json<ApiResponse>(
       { success: false, error: message },
       { status: 500 }
@@ -118,72 +112,119 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * GET /api/users
- * 获取用户列表
+ * POST /api/users
+ * 创建用户（按权限限制可创建的角色）
+ * - SYSTEM_DEVELOPER: 可创建 COMPANY_MANAGER
+ * - COMPANY_MANAGER: 可创建 CANTEEN_MANAGER, STALL_MANAGER
+ * - CANTEEN_MANAGER: 可创建 STALL_MANAGER
  */
-export async function GET(request: NextRequest) {
-  const currentUser = getCurrentUser(request);
-  if (!currentUser) return unauthorized();
+export async function POST(request: NextRequest) {
+  const user = getCurrentUser(request);
+  if (!user) return unauthorized();
 
-  const minRoleCheck = requireMinRole(currentUser, RoleLevel.CANTEEN_MANAGER);
+  const minRoleCheck = requireMinRole(user, RoleLevel.CANTEEN_MANAGER);
   if (!minRoleCheck.ok) return minRoleCheck.response;
 
   try {
-    const client = getSupabaseClient();
+    const body = (await request.json()) as {
+      username: string;
+      real_name: string;
+      password?: string;
+      role_code: string;
+      org_id?: string;
+      expires_at?: string;
+      company_name?: string;
+    };
 
-    if (currentUser.role_code === RoleCode.SYSTEM_DEVELOPER) {
-      const { data, error } = await client
-        .from('users')
-        .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
-        .order('created_at', { ascending: false });
-      if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
-      return NextResponse.json<ApiResponse>({ success: true, data });
+    const { username, real_name, role_code, org_id, expires_at, company_name } = body;
+    const password = body.password || DEFAULT_PASSWORD;
+
+    if (!username || !real_name || !role_code) {
+      return NextResponse.json<ApiResponse>(
+        { success: false, error: '用户名、姓名和角色为必填' },
+        { status: 400 }
+      );
     }
 
-    if (currentUser.role_code === RoleCode.COMPANY_MANAGER) {
-      const { data: canteens } = await client
-        .from('canteens')
-        .select('id')
-        .eq('company_id', currentUser.org_id);
-      const canteenIds = (canteens || []).map((c: { id: string }) => c.id);
-      const orgIds = [currentUser.org_id, ...canteenIds];
-
-      const { data: stalls } = await client
-        .from('stalls')
-        .select('id')
-        .in('canteen_id', canteenIds.length > 0 ? canteenIds : ['__none__']);
-      const stallIds = (stalls || []).map((s: { id: string }) => s.id);
-      orgIds.push(...stallIds);
-
-      const { data, error } = await client
-        .from('users')
-        .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
-        .in('org_id', orgIds.length > 0 ? orgIds : ['__none__'])
-        .order('created_at', { ascending: false });
-      if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
-      return NextResponse.json<ApiResponse>({ success: true, data });
+    // Role-based creation restrictions
+    const allowedRoles: string[] = [];
+    if (user.role_code === RoleCode.SYSTEM_DEVELOPER) {
+      allowedRoles.push(RoleCode.COMPANY_MANAGER);
+    } else if (user.role_code === RoleCode.COMPANY_MANAGER) {
+      allowedRoles.push(RoleCode.CANTEEN_MANAGER, RoleCode.STALL_MANAGER);
+    } else if (user.role_code === RoleCode.CANTEEN_MANAGER) {
+      allowedRoles.push(RoleCode.STALL_MANAGER);
     }
 
-    if (currentUser.role_code === RoleCode.CANTEEN_MANAGER) {
-      const { data: stalls } = await client
-        .from('stalls')
-        .select('id')
-        .eq('canteen_id', currentUser.org_id);
-      const stallIds = (stalls || []).map((s: { id: string }) => s.id);
-      const orgIds = [currentUser.org_id, ...stallIds];
-
-      const { data, error } = await client
-        .from('users')
-        .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
-        .in('org_id', orgIds.length > 0 ? orgIds : ['__none__'])
-        .order('created_at', { ascending: false });
-      if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
-      return NextResponse.json<ApiResponse>({ success: true, data });
+    if (!allowedRoles.includes(role_code)) {
+      return NextResponse.json<ApiResponse>(
+        { success: false, error: `您无权创建${role_code}角色的账号` },
+        { status: 403 }
+      );
     }
 
-    return NextResponse.json<ApiResponse>({ success: true, data: [] });
+    // Validate org_id based on role
+    let effectiveOrgId = org_id || null;
+    if (user.role_code === RoleCode.COMPANY_MANAGER || user.role_code === RoleCode.CANTEEN_MANAGER) {
+      // Sub-accounts must belong to the same org
+      effectiveOrgId = user.org_id;
+    }
+
+    // For SYSTEM_DEVELOPER creating COMPANY_MANAGER, create a company record first
+    const supabase = getSupabaseClient();
+    if (user.role_code === RoleCode.SYSTEM_DEVELOPER && role_code === RoleCode.COMPANY_MANAGER) {
+      const companyName = company_name?.trim() || `${real_name}的公司`;
+      const { data: companyData, error: companyError } = await supabase
+        .from('companies')
+        .insert({ name: companyName })
+        .select('id')
+        .single();
+
+      if (companyError || !companyData) {
+        return NextResponse.json<ApiResponse>(
+          { success: false, error: `创建公司失败: ${companyError?.message || '未知错误'}` },
+          { status: 500 }
+        );
+      }
+      effectiveOrgId = companyData.id;
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    const insertData: Record<string, unknown> = {
+      username,
+      real_name,
+      password_hash: passwordHash,
+      role_code,
+      org_id: effectiveOrgId,
+    };
+
+    if (user.role_code === RoleCode.SYSTEM_DEVELOPER && expires_at) {
+      insertData.expires_at = expires_at;
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .insert(insertData)
+      .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
+      .single();
+
+    if (error) {
+      if (error.message.includes('duplicate') || error.message.includes('unique')) {
+        return NextResponse.json<ApiResponse>(
+          { success: false, error: '用户名已存在' },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json<ApiResponse>(
+        { success: false, error: `创建失败: ${error.message}` },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json<ApiResponse>({ success: true, data }, { status: 201 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : '查询失败';
+    const message = err instanceof Error ? err.message : '创建失败';
     return NextResponse.json<ApiResponse>(
       { success: false, error: message },
       { status: 500 }

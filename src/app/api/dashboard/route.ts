@@ -98,8 +98,8 @@ export async function GET(request: NextRequest) {
       const canteenId = r.canteen_id as string;
       const existing = canteenRevenueMap.get(canteenId);
       const amt = parseFloat((r.amount as string) || '0');
-      const canteens = r.canteens as { name: string }[] | null;
-      const name = canteens?.[0]?.name || '未知';
+      const canteens = r.canteens as { name: string } | { name: string }[] | null;
+      const name = Array.isArray(canteens) ? canteens[0]?.name : (canteens as { name: string } | null)?.name || '未知';
       if (existing) {
         existing.amount += amt;
       } else {
@@ -120,8 +120,8 @@ export async function GET(request: NextRequest) {
       const stallId = r.stall_id as string;
       const existing = stallRevenueMap.get(stallId);
       const amt = parseFloat((r.amount as string) || '0');
-      const stalls = r.stalls as { name: string }[] | null;
-      const name = stalls?.[0]?.name || '未知';
+      const stalls = r.stalls as { name: string } | { name: string }[] | null;
+      const name = Array.isArray(stalls) ? stalls[0]?.name : (stalls as { name: string } | null)?.name || '未知';
       if (existing) {
         existing.amount += amt;
       } else {

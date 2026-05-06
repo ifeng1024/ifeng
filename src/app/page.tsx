@@ -219,7 +219,8 @@ function DashboardPage({ user }: { user: UserInfo }) {
 
   if (loading && !data) return <div className="text-center py-20 text-gray-400">加载中...</div>;
 
-  const kpi = (data?.kpi || {}) as Record<string, number>;
+  const kpi = (data?.kpi || {}) as Record<string, unknown>;
+  const num = (v: unknown) => typeof v === 'number' ? v : parseFloat(String(v || 0));
   const canteenComparison = (data?.canteen_revenue || []) as { name: string; amount: number }[];
   const stallRanking = (data?.stall_ranking || []) as { name: string; amount: number }[];
   const revenueTrend = (data?.revenue_trend || []) as { date: string; amount: number }[];
@@ -240,15 +241,15 @@ function DashboardPage({ user }: { user: UserInfo }) {
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
         {[
-          { label: '今日营收', value: kpi.total_revenue || 0, color: 'text-blue-600', prefix: '¥' },
-          { label: '今日支出', value: kpi.total_expense || 0, color: 'text-red-600', prefix: '¥' },
-          { label: '今日毛利', value: kpi.gross_profit || 0, color: 'text-green-600', prefix: '¥' },
-          { label: '毛利率', value: kpi.gross_margin || 0, color: 'text-purple-600', suffix: '%' },
+          { label: '今日营收', value: num(kpi.total_revenue), color: 'text-blue-600', prefix: '¥' },
+          { label: '今日支出', value: num(kpi.total_expense), color: 'text-red-600', prefix: '¥' },
+          { label: '今日毛利', value: num(kpi.gross_profit), color: 'text-green-600', prefix: '¥' },
+          { label: '毛利率', value: num(kpi.gross_margin), color: 'text-purple-600', suffix: '%' },
         ].map(k => (
           <div key={k.label} className="bg-white rounded-xl p-4 shadow-sm border">
             <div className="text-xs text-gray-500 mb-1">{k.label}</div>
             <div className={`text-xl md:text-2xl font-bold ${k.color}`}>
-              {k.prefix}{typeof k.value === 'number' ? k.value.toFixed(k.suffix ? 1 : 2) : k.value}{k.suffix || ''}
+              {k.prefix}{k.value.toFixed(k.suffix ? 1 : 2)}{k.suffix || ''}
             </div>
           </div>
         ))}
@@ -260,16 +261,20 @@ function DashboardPage({ user }: { user: UserInfo }) {
         <div className="bg-white rounded-xl p-4 shadow-sm border">
           <h3 className="text-sm font-semibold text-gray-700 mb-3">食堂营收对比</h3>
           <div className="space-y-2">
-            {canteenComparison.length > 0 ? canteenComparison.map(c => (
+            {canteenComparison.length > 0 ? canteenComparison.map(c => {
+              const cAmt = num(c.amount);
+              const maxAmt = Math.max(...canteenComparison.map(x => num(x.amount)), 1);
+              return (
               <div key={c.name} className="flex items-center gap-3">
                 <span className="text-sm text-gray-600 w-24 truncate">{c.name}</span>
                 <div className="flex-1 bg-gray-100 rounded-full h-6 overflow-hidden">
-                  <div className="bg-blue-500 h-full rounded-full flex items-center justify-end pr-2" style={{ width: `${Math.max(5, (c.amount / Math.max(...canteenComparison.map(x => x.amount), 1)) * 100)}%` }}>
-                    <span className="text-xs text-white font-medium">¥{c.amount.toFixed(0)}</span>
+                  <div className="bg-blue-500 h-full rounded-full flex items-center justify-end pr-2" style={{ width: `${Math.max(5, (cAmt / maxAmt) * 100)}%` }}>
+                    <span className="text-xs text-white font-medium">¥{cAmt.toFixed(0)}</span>
                   </div>
                 </div>
               </div>
-            )) : <div className="text-center text-gray-400 py-6 text-sm">暂无数据</div>}
+              );
+            }) : <div className="text-center text-gray-400 py-6 text-sm">暂无数据</div>}
           </div>
         </div>
 
@@ -281,7 +286,7 @@ function DashboardPage({ user }: { user: UserInfo }) {
               <div key={s.name} className="flex items-center gap-3">
                 <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${i < 3 ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-600'}`}>{i + 1}</span>
                 <span className="text-sm text-gray-600 flex-1 truncate">{s.name}</span>
-                <span className="text-sm font-medium text-gray-800">¥{s.amount.toFixed(0)}</span>
+                <span className="text-sm font-medium text-gray-800">¥{num(s.amount).toFixed(0)}</span>
               </div>
             )) : <div className="text-center text-gray-400 py-6 text-sm">暂无数据</div>}
           </div>
@@ -293,11 +298,12 @@ function DashboardPage({ user }: { user: UserInfo }) {
         <h3 className="text-sm font-semibold text-gray-700 mb-3">营收趋势</h3>
         <div className="h-48 flex items-end gap-1 overflow-x-auto">
           {revenueTrend.length > 0 ? revenueTrend.map((r, i) => {
-            const maxAmt = Math.max(...revenueTrend.map(x => x.amount), 1);
-            const h = Math.max(4, (r.amount / maxAmt) * 100);
+            const rAmt = num(r.amount);
+            const maxAmt = Math.max(...revenueTrend.map(x => num(x.amount)), 1);
+            const h = Math.max(4, (rAmt / maxAmt) * 100);
             return (
-              <div key={i} className="flex-1 min-w-[30px] flex flex-col items-center gap-1" title={`${r.date}: ¥${r.amount.toFixed(0)}`}>
-                <span className="text-xs text-gray-500">¥{(r.amount / 1000).toFixed(1)}k</span>
+              <div key={i} className="flex-1 min-w-[30px] flex flex-col items-center gap-1" title={`${r.date}: ¥${rAmt.toFixed(0)}`}>
+                <span className="text-xs text-gray-500">¥{(rAmt / 1000).toFixed(1)}k</span>
                 <div className="w-full bg-blue-400 rounded-t" style={{ height: `${h}%`, minHeight: '4px' }} />
                 <span className="text-xs text-gray-400">{r.date.slice(5)}</span>
               </div>
@@ -312,8 +318,8 @@ function DashboardPage({ user }: { user: UserInfo }) {
           <h3 className="text-sm font-semibold text-gray-700 mb-3">支出构成</h3>
           <div className="space-y-2">
             {expenseBreakdown.length > 0 ? expenseBreakdown.map(e => {
-              const total = expenseBreakdown.reduce((s, x) => s + x.amount, 0) || 1;
-              const pct = ((e.amount / total) * 100).toFixed(1);
+              const total = expenseBreakdown.reduce((s, x) => s + num(x.amount), 0) || 1;
+              const pct = ((num(e.amount) / total) * 100).toFixed(1);
               return (
                 <div key={e.category} className="flex items-center gap-3">
                   <span className="text-sm text-gray-600 w-20 truncate">{e.category}</span>
@@ -339,10 +345,10 @@ function DashboardPage({ user }: { user: UserInfo }) {
                 {dailyDetail.map((r, i) => (
                   <tr key={i} className="border-b last:border-0">
                     <td className="py-2 px-2">{(r.canteen_name as string) || '-'}</td>
-                    <td className="py-2 px-2 text-right">¥{(r.revenue as number)?.toFixed(2) || '0.00'}</td>
-                    <td className="py-2 px-2 text-right">¥{(r.expense as number)?.toFixed(2) || '0.00'}</td>
-                    <td className="py-2 px-2 text-right">¥{(r.gross_profit as number)?.toFixed(2) || '0.00'}</td>
-                    <td className="py-2 px-2 text-right">{(r.gross_margin as number)?.toFixed(1) || '0.0'}%</td>
+                    <td className="py-2 px-2 text-right">¥{num(r.revenue).toFixed(2)}</td>
+                    <td className="py-2 px-2 text-right">¥{num(r.expense).toFixed(2)}</td>
+                    <td className="py-2 px-2 text-right">¥{num(r.gross_profit).toFixed(2)}</td>
+                    <td className="py-2 px-2 text-right">{num(r.gross_margin).toFixed(1)}%</td>
                   </tr>
                 ))}
                 {dailyDetail.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-gray-400">暂无数据</td></tr>}

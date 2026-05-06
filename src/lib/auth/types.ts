@@ -97,6 +97,8 @@ export interface DbUser {
   role_code: RoleCodeValue;
   org_id: string | null;
   is_active: boolean;
+  is_disabled: boolean;
+  expires_at: string | null;
   created_at: string;
   updated_at: string | null;
 }

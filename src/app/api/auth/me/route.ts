@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     const client = getSupabaseClient();
     const { data, error } = await client
       .from('users')
-      .select('id, username, real_name, phone, email, role_code, org_id, is_active, created_at')
+      .select('id, username, real_name, phone, email, role_code, org_id, is_active, is_disabled, expires_at, created_at')
       .eq('id', user.user_id)
       .maybeSingle();
 
@@ -45,6 +45,8 @@ export async function GET(request: NextRequest) {
         role_label: RoleLabel[dbUser.role_code],
         org_id: dbUser.org_id,
         is_active: dbUser.is_active,
+        is_disabled: dbUser.is_disabled,
+        expires_at: dbUser.expires_at,
         created_at: dbUser.created_at,
       },
     });

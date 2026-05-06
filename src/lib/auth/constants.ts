@@ -34,6 +34,8 @@ export const RoleLabel: Record<RoleCodeValue, string> = {
   REGULAR_USER: '普通订餐用户',
 };
 
+export const DEFAULT_PASSWORD = '123456';
+
 /**
  * 角色与组织表的映射关系
  * 根据 role_code 确定 org_id 关联的实体表

@@ -1,92 +1,106 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, checkCanteenAccess } from '@/lib/auth/guard';
-import { RoleCode } from '@/lib/auth/constants';
+import { getCurrentUser, requireRoles, checkCanteenAccess, CAN_MANAGE_CANTEEN, unauthorized } from '@/lib/auth/guard';
+import type { ApiResponse } from '@/lib/auth/types';
 
-/** 更新固定支出 */
+/**
+ * PUT /api/settings/fixed-expenses/[id]
+ * 编辑固定支出（修改金额时同步更新日期范围内已自动生成的支出记录）
+ */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = getCurrentUser(request);
-  const roleCheck = requireRoles(user, [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER]);
+  if (!user) return unauthorized();
+
+  const roleCheck = requireRoles(user, CAN_MANAGE_CANTEEN);
   if (!roleCheck.ok) return roleCheck.response;
 
-  try {
-    const { id } = await params;
-    const body = await request.json();
-    const client = getSupabaseClient();
+  const { id } = await params;
+  const body = (await request.json()) as Record<string, unknown>;
+  const { category, amount, note, start_date, end_date } = body;
 
-    const { data: existing } = await client
-      .from('fixed_expenses')
-      .select('canteen_id')
-      .eq('id', id)
-      .eq('is_active', true)
-      .maybeSingle();
+  const supabase = getSupabaseClient();
 
-    if (!existing) {
-      return NextResponse.json({ success: false, error: '记录不存在' }, { status: 404 });
+  // 查找原记录
+  const { data: existing } = await supabase
+    .from('fixed_expenses')
+    .select('*')
+    .eq('id', id)
+    .eq('is_active', true)
+    .single();
+
+  if (!existing) return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
+
+  const access = await checkCanteenAccess(roleCheck.user, (existing as Record<string, unknown>).canteen_id as string);
+  if (!access.ok) return access.response;
+
+  const newAmount = amount !== undefined ? String(amount) : (existing as Record<string, unknown>).amount as string;
+  const newCategory = (category as string) || ((existing as Record<string, unknown>).category as string);
+  const newStartDate = (start_date as string) || ((existing as Record<string, unknown>).start_date as string);
+  const newEndDate = (end_date as string) || ((existing as Record<string, unknown>).end_date as string) || null;
+
+  // 更新固定支出记录
+  const { data, error } = await supabase
+    .from('fixed_expenses')
+    .update({
+      category: newCategory,
+      amount: newAmount,
+      note: note !== undefined ? ((note as string) || null) : (existing as Record<string, unknown>).note as string | null,
+      start_date: newStartDate,
+      end_date: newEndDate,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
+
+  // 如果金额发生变化，且存在日期范围，则同步更新该范围内已自动生成的支出记录
+  if (amount !== undefined && String(amount) !== (existing as Record<string, unknown>).amount && newStartDate) {
+    const updateQuery = supabase
+      .from('expense_records')
+      .update({
+        amount: newAmount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('fixed_expense_id', id)
+      .eq('is_auto_generated', true)
+      .gte('expense_date', newStartDate);
+
+    if (newEndDate) {
+      void updateQuery.lte('expense_date', newEndDate);
     }
-
-    const canteenCheck = await checkCanteenAccess(roleCheck.user, existing.canteen_id);
-    if (!canteenCheck.ok) return canteenCheck.response;
-
-    const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    if (body.category !== undefined) updateFields.category = body.category;
-    if (body.amount !== undefined) updateFields.amount = String(body.amount);
-    if (body.note !== undefined) updateFields.note = body.note || null;
-
-    const { data, error } = await client
-      .from('fixed_expenses')
-      .update(updateFields)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-    return NextResponse.json({ success: true, data });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '更新失败';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    await updateQuery;
   }
+
+  return NextResponse.json<ApiResponse>({ success: true, data });
 }
 
-/** 删除固定支出（软删除） */
+/**
+ * DELETE /api/settings/fixed-expenses/[id]
+ * 软删除固定支出
+ */
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = getCurrentUser(request);
-  const roleCheck = requireRoles(user, [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER]);
+  if (!user) return unauthorized();
+
+  const roleCheck = requireRoles(user, CAN_MANAGE_CANTEEN);
   if (!roleCheck.ok) return roleCheck.response;
 
-  try {
-    const { id } = await params;
-    const client = getSupabaseClient();
+  const { id } = await params;
+  const supabase = getSupabaseClient();
 
-    const { data: existing } = await client
-      .from('fixed_expenses')
-      .select('canteen_id')
-      .eq('id', id)
-      .eq('is_active', true)
-      .maybeSingle();
+  const { error } = await supabase
+    .from('fixed_expenses')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('id', id);
 
-    if (!existing) {
-      return NextResponse.json({ success: false, error: '记录不存在' }, { status: 404 });
-    }
-
-    const canteenCheck = await checkCanteenAccess(roleCheck.user, existing.canteen_id);
-    if (!canteenCheck.ok) return canteenCheck.response;
-
-    const { error } = await client
-      .from('fixed_expenses')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', id);
-
-    if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
-    return NextResponse.json({ success: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '删除失败';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
-  }
+  if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
+  return NextResponse.json<ApiResponse>({ success: true });
 }

@@ -69,6 +69,16 @@ export const CAN_MANAGE_STALL: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, Rol
 export const CAN_MANAGE_MEAL_TYPE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER];
 
 /**
+ * 允许录入营收数据的角色
+ */
+export const CAN_ENTER_REVENUE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER, RoleCode.STALL_MANAGER];
+
+/**
+ * 允许录入支出数据的角色（档口负责人无支出录入权限）
+ */
+export const CAN_ENTER_EXPENSE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER];
+
+/**
  * 允许管理营收类型的角色
  */
 export const CAN_MANAGE_REVENUE_TYPE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER];

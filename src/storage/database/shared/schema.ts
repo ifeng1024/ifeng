@@ -53,6 +53,8 @@ export const canteens = pgTable(
 		company_id: varchar("company_id", { length: 36 }).notNull().references(() => companies.id, { onDelete: "cascade" }),
 		name: varchar("name", { length: 128 }).notNull(),
 		address: varchar("address", { length: 256 }),
+		contact_name: varchar("contact_name", { length: 64 }),
+		contact_phone: varchar("contact_phone", { length: 20 }),
 		manager_id: varchar("manager_id", { length: 36 }), // 食堂负责人 user id
 		is_active: boolean("is_active").default(true).notNull(),
 		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -67,7 +69,7 @@ export const canteens = pgTable(
 
 /**
  * 档口表
- * 隶属于食堂
+ * 隶属于食堂，支持外送/外卖标记
  */
 export const stalls = pgTable(
 	"stalls",
@@ -76,6 +78,10 @@ export const stalls = pgTable(
 		canteen_id: varchar("canteen_id", { length: 36 }).notNull().references(() => canteens.id, { onDelete: "cascade" }),
 		name: varchar("name", { length: 128 }).notNull(),
 		manager_id: varchar("manager_id", { length: 36 }), // 档口负责人 user id
+		has_delivery: boolean("has_delivery").default(false).notNull(), // 是否有外送
+		has_takeout: boolean("has_takeout").default(false).notNull(), // 是否有外卖
+		contact_name: varchar("contact_name", { length: 64 }),
+		contact_phone: varchar("contact_phone", { length: 20 }),
 		is_active: boolean("is_active").default(true).notNull(),
 		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 		updated_at: timestamp("updated_at", { withTimezone: true }),
@@ -188,7 +194,7 @@ export const company_params = pgTable(
 /**
  * 营收记录表
  * 每日各档口的营收数据
- * 唯一约束：同一档口+同一日期+同一餐别+同一类型 不可重复
+ * 唯一约束：同一档口+同一日期+同一餐别 不可重复
  */
 export const revenue_records = pgTable(
 	"revenue_records",
@@ -196,8 +202,7 @@ export const revenue_records = pgTable(
 		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
 		canteen_id: varchar("canteen_id", { length: 36 }).notNull().references(() => canteens.id, { onDelete: "cascade" }),
 		stall_id: varchar("stall_id", { length: 36 }).notNull().references(() => stalls.id, { onDelete: "cascade" }),
-		meal_type_id: varchar("meal_type_id", { length: 36 }).references(() => meal_types.id, { onDelete: "set null" }),
-		revenue_type_id: varchar("revenue_type_id", { length: 36 }).references(() => revenue_types.id, { onDelete: "set null" }),
+		meal_type_id: varchar("meal_type_id", { length: 36 }).notNull().references(() => meal_types.id, { onDelete: "restrict" }),
 		record_date: date("record_date").notNull(), // 营业日期
 		order_count: integer("order_count").default(0).notNull(), // 订单数
 		amount: numeric("amount", { precision: 12, scale: 2 }).notNull().default('0'), // 金额（元）
@@ -222,7 +227,7 @@ export const revenue_records = pgTable(
 
 /**
  * 支出记录表
- * 每日各项支出
+ * 每日各项支出，食材采购可关联商品信息
  */
 export const expense_records = pgTable(
 	"expense_records",
@@ -235,6 +240,11 @@ export const expense_records = pgTable(
 		note: text("note"), // 备注
 		is_auto_generated: boolean("is_auto_generated").default(false).notNull(), // 是否由固定支出自动生成
 		fixed_expense_id: varchar("fixed_expense_id", { length: 36 }), // 关联固定支出ID
+		product_category_id: varchar("product_category_id", { length: 36 }), // 食材品类（仅食材采购）
+		product_id: varchar("product_id", { length: 36 }), // 食材名称（仅食材采购）
+		quantity: numeric("quantity", { precision: 12, scale: 2 }), // 数量（仅食材采购）
+		unit_price: numeric("unit_price", { precision: 12, scale: 2 }), // 单价（仅食材采购）
+		product_spec_id: varchar("product_spec_id", { length: 36 }), // 规格（仅食材采购）
 		created_by: varchar("created_by", { length: 36 }), // 创建人 user id
 		is_active: boolean("is_active").default(true).notNull(),
 		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -250,15 +260,17 @@ export const expense_records = pgTable(
 
 /**
  * 固定支出表
- * 由公司负责人预设，系统每日自动生成支出记录
+ * 由公司负责人预设，支持起始/结束时间，系统自动在日期范围内生成支出记录
  */
 export const fixed_expenses = pgTable(
 	"fixed_expenses",
 	{
 		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
 		canteen_id: varchar("canteen_id", { length: 36 }).notNull().references(() => canteens.id, { onDelete: "cascade" }),
-		category: varchar("category", { length: 32 }).notNull(), // 支出类别
+		category: varchar("category", { length: 64 }).notNull(), // 支出类别（用户自定义）
 		amount: numeric("amount", { precision: 12, scale: 2 }).notNull().default('0'), // 每日金额
+		start_date: date("start_date"), // 起始日期
+		end_date: date("end_date"), // 结束日期
 		note: text("note"), // 备注
 		is_active: boolean("is_active").default(true).notNull(),
 		created_by: varchar("created_by", { length: 36 }),
@@ -290,5 +302,62 @@ export const operation_logs = pgTable(
 		index("operation_logs_user_id_idx").on(table.user_id),
 		index("operation_logs_action_idx").on(table.action),
 		index("operation_logs_created_at_idx").on(table.created_at),
+	]
+);
+
+/**
+ * 商品大类表
+ * 隶属于公司，支出模块中食材采购的品类下拉数据源
+ */
+export const product_categories = pgTable(
+	"product_categories",
+	{
+		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+		company_id: varchar("company_id", { length: 36 }).notNull().references(() => companies.id, { onDelete: "cascade" }),
+		name: varchar("name", { length: 64 }).notNull(),
+		is_active: boolean("is_active").default(true).notNull(),
+		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updated_at: timestamp("updated_at", { withTimezone: true }),
+	},
+	(table) => [
+		index("product_categories_company_id_idx").on(table.company_id),
+	]
+);
+
+/**
+ * 商品表
+ * 隶属于商品大类
+ */
+export const products = pgTable(
+	"products",
+	{
+		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+		category_id: varchar("category_id", { length: 36 }).notNull().references(() => product_categories.id, { onDelete: "cascade" }),
+		name: varchar("name", { length: 128 }).notNull(),
+		is_active: boolean("is_active").default(true).notNull(),
+		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updated_at: timestamp("updated_at", { withTimezone: true }),
+	},
+	(table) => [
+		index("products_category_id_idx").on(table.category_id),
+	]
+);
+
+/**
+ * 商品规格表
+ * 隶属于商品，如：斤、千克、箱、包等
+ */
+export const product_specs = pgTable(
+	"product_specs",
+	{
+		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+		product_id: varchar("product_id", { length: 36 }).notNull().references(() => products.id, { onDelete: "cascade" }),
+		name: varchar("name", { length: 32 }).notNull(),
+		is_active: boolean("is_active").default(true).notNull(),
+		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updated_at: timestamp("updated_at", { withTimezone: true }),
+	},
+	(table) => [
+		index("product_specs_product_id_idx").on(table.product_id),
 	]
 );

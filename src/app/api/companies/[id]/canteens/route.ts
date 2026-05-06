@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { getCurrentUser, requireRoles, checkCompanyAccess, CAN_MANAGE_CANTEEN, unauthorized } from '@/lib/auth/guard';
-import type { ApiResponse, CreateCanteenRequest, DbCanteen, DbCompany } from '@/lib/auth/types';
+import type { ApiResponse } from '@/lib/auth/types';
 
 /**
  * POST /api/companies/[id]/canteens
@@ -18,21 +18,19 @@ export async function POST(
 
   const { id: companyId } = await params;
 
-  // 校验公司归属权
   const accessCheck = await checkCompanyAccess(roleCheck.user, companyId);
   if (!accessCheck.ok) return accessCheck.response;
 
   try {
-    const body = (await request.json()) as CreateCanteenRequest;
+    const body = (await request.json()) as Record<string, unknown>;
 
-    if (!body.name?.trim()) {
+    if (!body.name || !String(body.name).trim()) {
       return NextResponse.json<ApiResponse>(
         { success: false, error: '食堂名称不能为空' },
         { status: 400 }
       );
     }
 
-    // 确认公司存在
     const client = getSupabaseClient();
     const { data: company, error: companyError } = await client
       .from('companies')
@@ -47,12 +45,14 @@ export async function POST(
       );
     }
 
-    // 创建食堂
     const insertData: Record<string, unknown> = {
       company_id: companyId,
-      name: body.name.trim(),
+      name: String(body.name).trim(),
     };
     if (body.address) insertData.address = body.address;
+    if (body.contact_name) insertData.contact_name = body.contact_name;
+    if (body.contact_phone) insertData.contact_phone = body.contact_phone;
+    if (body.manager_id) insertData.manager_id = body.manager_id;
 
     const { data, error } = await client
       .from('canteens')
@@ -68,7 +68,7 @@ export async function POST(
     }
 
     return NextResponse.json<ApiResponse>(
-      { success: true, data: data as DbCanteen },
+      { success: true, data },
       { status: 201 }
     );
   } catch (err) {
@@ -82,7 +82,7 @@ export async function POST(
 
 /**
  * GET /api/companies/[id]/canteens
- * 获取指定公司下的食堂列表
+ * 获取指定公司下的食堂列表，包含负责人信息
  */
 export async function GET(
   request: NextRequest,
@@ -93,7 +93,6 @@ export async function GET(
 
   const { id: companyId } = await params;
 
-  // 校验公司归属权
   const accessCheck = await checkCompanyAccess(currentUser, companyId);
   if (!accessCheck.ok) return accessCheck.response;
 
@@ -101,8 +100,9 @@ export async function GET(
     const client = getSupabaseClient();
     const { data, error } = await client
       .from('canteens')
-      .select('id, company_id, name, address, manager_id, is_active, created_at')
+      .select('id, company_id, name, address, contact_name, contact_phone, manager_id, is_active, created_at')
       .eq('company_id', companyId)
+      .eq('is_active', true)
       .order('created_at', { ascending: false });
 
     if (error) {

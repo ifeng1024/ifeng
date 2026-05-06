@@ -23,14 +23,14 @@ export async function GET(request: NextRequest) {
     if (type === 'revenue') {
       let query = client
         .from('revenue_records')
-        .select('canteen_id, stall_id, record_date, order_count, amount, note, created_at, canteens(name), stalls(name), meal_types(name), revenue_types(name)')
+        .select('canteen_id, stall_id, record_date, order_count, amount, note, created_at, canteens(name), stalls(name), meal_types(name)')
         .eq('is_active', true)
         .order('record_date', { ascending: false });
 
       if (roleCheck.user.role_code === RoleCode.CANTEEN_MANAGER) {
-        query = query.eq('canteen_id', roleCheck.user.org_id);
+        query = query.eq('canteen_id', roleCheck.user.org_id!);
       } else if (roleCheck.user.role_code === RoleCode.COMPANY_MANAGER) {
-        const { data: canteens } = await client.from('canteens').select('id').eq('company_id', roleCheck.user.org_id);
+        const { data: canteens } = await client.from('canteens').select('id').eq('company_id', roleCheck.user.org_id!);
         const ids = (canteens || []).map((c: { id: string }) => c.id);
         query = query.in('canteen_id', ids.length > 0 ? ids : ['__none__']);
       }
@@ -41,13 +41,12 @@ export async function GET(request: NextRequest) {
       const { data, error } = await query;
       if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
 
-      const header = '营业日期,食堂,档口,餐别,营收类型,订单数,金额,备注\n';
+      const header = '营业日期,食堂,档口,餐别,订单数,金额,备注\n';
       const rows = (data || []).map((r: Record<string, unknown>) => {
-        const canteen = (r.canteens as { name: string } | null)?.name || '';
-        const stall = (r.stalls as { name: string } | null)?.name || '';
-        const meal = (r.meal_types as { name: string } | null)?.name || '';
-        const revType = (r.revenue_types as { name: string } | null)?.name || '';
-        return `${r.record_date},${canteen},${stall},${meal},${revType},${r.order_count},${r.amount},${(r.note as string || '').replace(/,/g, '，')}`;
+        const canteen = (r.canteens as { name: string }[] | null)?.[0]?.name || '';
+        const stall = (r.stalls as { name: string }[] | null)?.[0]?.name || '';
+        const meal = (r.meal_types as { name: string }[] | null)?.[0]?.name || '';
+        return `${r.record_date},${canteen},${stall},${meal},${r.order_count},${r.amount},${(r.note as string || '').replace(/,/g, '，')}`;
       }).join('\n');
 
       const csv = BOM + header + rows;
@@ -62,14 +61,14 @@ export async function GET(request: NextRequest) {
     if (type === 'expense') {
       let query = client
         .from('expense_records')
-        .select('canteen_id, expense_date, category, amount, note, is_auto_generated, canteens(name)')
+        .select('canteen_id, expense_date, category, amount, note, is_auto_generated, product_category_id, product_id, quantity, unit_price, product_spec_id, canteens(name)')
         .eq('is_active', true)
         .order('expense_date', { ascending: false });
 
       if (roleCheck.user.role_code === RoleCode.CANTEEN_MANAGER) {
-        query = query.eq('canteen_id', roleCheck.user.org_id);
+        query = query.eq('canteen_id', roleCheck.user.org_id!);
       } else if (roleCheck.user.role_code === RoleCode.COMPANY_MANAGER) {
-        const { data: canteens } = await client.from('canteens').select('id').eq('company_id', roleCheck.user.org_id);
+        const { data: canteens } = await client.from('canteens').select('id').eq('company_id', roleCheck.user.org_id!);
         const ids = (canteens || []).map((c: { id: string }) => c.id);
         query = query.in('canteen_id', ids.length > 0 ? ids : ['__none__']);
       }
@@ -80,10 +79,28 @@ export async function GET(request: NextRequest) {
       const { data, error } = await query;
       if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 });
 
-      const header = '支出日期,食堂,支出类别,金额,是否自动生成,备注\n';
+      // 查询商品关联名称
+      const categoryIds = [...new Set((data || []).map((r: Record<string, unknown>) => r.product_category_id).filter(Boolean) as string[])];
+      const productIds = [...new Set((data || []).map((r: Record<string, unknown>) => r.product_id).filter(Boolean) as string[])];
+      const specIds = [...new Set((data || []).map((r: Record<string, unknown>) => r.product_spec_id).filter(Boolean) as string[])];
+
+      const [catRes, prodRes, specRes] = await Promise.all([
+        categoryIds.length > 0 ? client.from('product_categories').select('id, name').in('id', categoryIds) : { data: [] },
+        productIds.length > 0 ? client.from('products').select('id, name').in('id', productIds) : { data: [] },
+        specIds.length > 0 ? client.from('product_specs').select('id, name').in('id', specIds) : { data: [] },
+      ]);
+
+      const catMap = new Map((catRes.data || []).map((c: { id: string; name: string }) => [c.id, c.name]));
+      const prodMap = new Map((prodRes.data || []).map((p: { id: string; name: string }) => [p.id, p.name]));
+      const specMap = new Map((specRes.data || []).map((s: { id: string; name: string }) => [s.id, s.name]));
+
+      const header = '支出日期,食堂,支出类别,食材品类,食材名称,数量,单价,规格,金额,是否自动生成,备注\n';
       const rows = (data || []).map((r: Record<string, unknown>) => {
-        const canteen = (r.canteens as { name: string } | null)?.name || '';
-        return `${r.expense_date},${canteen},${r.category},${r.amount},${r.is_auto_generated ? '是' : '否'},${(r.note as string || '').replace(/,/g, '，')}`;
+        const canteen = (r.canteens as { name: string }[] | null)?.[0]?.name || '';
+        const catName = r.product_category_id ? (catMap.get(r.product_category_id as string) || '') : '';
+        const prodName = r.product_id ? (prodMap.get(r.product_id as string) || '') : '';
+        const specName = r.product_spec_id ? (specMap.get(r.product_spec_id as string) || '') : '';
+        return `${r.expense_date},${canteen},${r.category},${catName},${prodName},${r.quantity || ''},${r.unit_price || ''},${specName},${r.amount},${r.is_auto_generated ? '是' : '否'},${(r.note as string || '').replace(/,/g, '，')}`;
       }).join('\n');
 
       const csv = BOM + header + rows;

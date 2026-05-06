@@ -1,109 +1,115 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, checkCanteenAccess, forbidden } from '@/lib/auth/guard';
-import { RoleCode } from '@/lib/auth/constants';
+import { getCurrentUser, requireRoles, checkCanteenAccess, checkStallAccess, CAN_MANAGE_STALL, unauthorized } from '@/lib/auth/guard';
+import type { ApiResponse } from '@/lib/auth/types';
 
-const CAN_RECORD_REVENUE = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER, RoleCode.STALL_MANAGER];
-
-/** 更新营收记录 */
+/**
+ * PUT /api/revenue-records/[id]
+ * 编辑营收记录
+ */
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = getCurrentUser(request);
-  const roleCheck = requireRoles(user, CAN_RECORD_REVENUE);
+  if (!user) return unauthorized();
+
+  const roleCheck = requireRoles(user, CAN_MANAGE_STALL);
   if (!roleCheck.ok) return roleCheck.response;
 
-  try {
-    const { id } = await params;
-    const body = await request.json();
-    const client = getSupabaseClient();
+  const { id } = await params;
+  const body = (await request.json()) as Record<string, unknown>;
+  const { canteen_id, stall_id, meal_type_id, record_date, order_count, amount, note } = body;
 
-    // 查询原记录
-    const { data: record, error: findError } = await client
-      .from('revenue_records')
-      .select('id, canteen_id, stall_id')
-      .eq('id', id)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (findError || !record) {
-      return NextResponse.json({ success: false, error: '记录不存在' }, { status: 404 });
-    }
-
-    // 权限校验
-    const canteenCheck = await checkCanteenAccess(roleCheck.user, record.canteen_id);
-    if (!canteenCheck.ok) return canteenCheck.response;
-
-    if (roleCheck.user.role_code === RoleCode.STALL_MANAGER && roleCheck.user.org_id !== record.stall_id) {
-      return forbidden('只能修改自己档口的数据');
-    }
-    if (roleCheck.user.role_code === RoleCode.CANTEEN_MANAGER && roleCheck.user.org_id !== record.canteen_id) {
-      return forbidden('只能修改自己食堂的数据');
-    }
-
-    const updateFields: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    if (body.order_count !== undefined) updateFields.order_count = body.order_count;
-    if (body.amount !== undefined) updateFields.amount = String(body.amount);
-    if (body.note !== undefined) updateFields.note = body.note || null;
-    if (body.meal_type_id !== undefined) updateFields.meal_type_id = body.meal_type_id || null;
-    if (body.revenue_type_id !== undefined) updateFields.revenue_type_id = body.revenue_type_id || null;
-
-    const { data, error } = await client
-      .from('revenue_records')
-      .update(updateFields)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) {
-      return NextResponse.json({ success: false, error: `更新失败: ${error.message}` }, { status: 500 });
-    }
-    return NextResponse.json({ success: true, data });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '更新失败';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  if (!meal_type_id) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '餐别为必填项' }, { status: 400 });
   }
+
+  const supabase = getSupabaseClient();
+
+  // 查找原记录
+  const { data: existing, error: findErr } = await supabase
+    .from('revenue_records')
+    .select('*')
+    .eq('id', id)
+    .eq('is_active', true)
+    .single();
+
+  if (findErr || !existing) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
+  }
+
+  const existingRec = existing as Record<string, unknown>;
+
+  // 权限校验
+  const cId = (canteen_id as string) || (existingRec.canteen_id as string);
+  const canteenAccess = await checkCanteenAccess(roleCheck.user, cId);
+  if (!canteenAccess.ok) return canteenAccess.response;
+
+  const sId = (stall_id as string) || (existingRec.stall_id as string);
+  const stallAccess = await checkStallAccess(roleCheck.user, sId);
+  if (!stallAccess.ok) return stallAccess.response;
+
+  const { data, error } = await supabase
+    .from('revenue_records')
+    .update({
+      ...(canteen_id !== undefined && { canteen_id: canteen_id as string }),
+      ...(stall_id !== undefined && { stall_id: stall_id as string }),
+      ...(meal_type_id !== undefined && { meal_type_id: meal_type_id as string }),
+      ...(record_date !== undefined && { record_date: record_date as string }),
+      ...(order_count !== undefined && { order_count: order_count as number }),
+      ...(amount !== undefined && { amount: String(amount) }),
+      ...(note !== undefined && { note: (note as string) || null }),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
+  return NextResponse.json<ApiResponse>({ success: true, data });
 }
 
-/** 删除营收记录（软删除） */
+/**
+ * DELETE /api/revenue-records/[id]
+ * 软删除营收记录
+ */
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const user = getCurrentUser(request);
-  const roleCheck = requireRoles(user, [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER]);
+  if (!user) return unauthorized();
+
+  const roleCheck = requireRoles(user, CAN_MANAGE_STALL);
   if (!roleCheck.ok) return roleCheck.response;
 
-  try {
-    const { id } = await params;
-    const client = getSupabaseClient();
+  const { id } = await params;
+  const supabase = getSupabaseClient();
 
-    const { data: record } = await client
-      .from('revenue_records')
-      .select('canteen_id, stall_id')
-      .eq('id', id)
-      .eq('is_active', true)
-      .maybeSingle();
+  const { data: existing } = await supabase
+    .from('revenue_records')
+    .select('canteen_id, stall_id')
+    .eq('id', id)
+    .eq('is_active', true)
+    .single();
 
-    if (!record) {
-      return NextResponse.json({ success: false, error: '记录不存在' }, { status: 404 });
-    }
+  if (!existing) return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
 
-    const canteenCheck = await checkCanteenAccess(roleCheck.user, record.canteen_id);
-    if (!canteenCheck.ok) return canteenCheck.response;
+  const existingRec = existing as Record<string, unknown>;
 
-    const { error } = await client
-      .from('revenue_records')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', id);
+  // 权限校验
+  const canteenAccess = await checkCanteenAccess(roleCheck.user, existingRec.canteen_id as string);
+  if (!canteenAccess.ok) return canteenAccess.response;
 
-    if (error) {
-      return NextResponse.json({ success: false, error: `删除失败: ${error.message}` }, { status: 500 });
-    }
-    return NextResponse.json({ success: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : '删除失败';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
-  }
+  const stallAccess = await checkStallAccess(roleCheck.user, existingRec.stall_id as string);
+  if (!stallAccess.ok) return stallAccess.response;
+
+  const { error } = await supabase
+    .from('revenue_records')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('id', id);
+
+  if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
+  return NextResponse.json<ApiResponse>({ success: true });
 }

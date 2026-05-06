@@ -1,249 +1,255 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles } from '@/lib/auth/guard';
-import { RoleCode } from '@/lib/auth/constants';
+import { getCurrentUser, requireRoles, CAN_MANAGE_CANTEEN, unauthorized } from '@/lib/auth/guard';
+import type { ApiResponse } from '@/lib/auth/types';
 
-/** 仪表盘聚合数据 */
+function localDate(): string {
+  return new Date().toLocaleDateString('sv-SE');
+}
+
+/**
+ * GET /api/dashboard?date=YYYY-MM-DD&range=7d|30d
+ */
 export async function GET(request: NextRequest) {
   const user = getCurrentUser(request);
-  if (!user) {
-    return NextResponse.json({ success: false, error: '未授权' }, { status: 401 });
+  if (!user) return unauthorized();
+
+  const roleCheck = requireRoles(user, CAN_MANAGE_CANTEEN);
+  if (!roleCheck.ok) return roleCheck.response;
+
+  const { searchParams } = new URL(request.url);
+  const dateStr = searchParams.get('date') || localDate();
+  const range = searchParams.get('range') || '7d';
+
+  const supabase = getSupabaseClient();
+
+  // Compute date ranges
+  const endDate = new Date(dateStr + 'T00:00:00');
+  const days = range === '30d' ? 30 : 7;
+  const startDate = new Date(endDate);
+  startDate.setDate(startDate.getDate() - days + 1);
+
+  // This week (Mon-Sun) and this month ranges
+  const today = new Date(dateStr + 'T00:00:00');
+  const dayOfWeek = today.getDay();
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() + mondayOffset);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+  const fmt = (d: Date) => d.toLocaleDateString('sv-SE');
+
+  // Get canteen IDs the user can access
+  let canteenIds: string[] = [];
+  if (roleCheck.user.role_code === 'SYSTEM_DEVELOPER') {
+    const { data } = await supabase.from('canteens').select('id').eq('is_active', true);
+    canteenIds = (data || []).map((c: { id: string }) => c.id);
+  } else if (roleCheck.user.role_code === 'COMPANY_MANAGER') {
+    const { data } = await supabase.from('canteens').select('id').eq('company_id', roleCheck.user.org_id).eq('is_active', true);
+    canteenIds = (data || []).map((c: { id: string }) => c.id);
+  } else if (roleCheck.user.role_code === 'CANTEEN_MANAGER') {
+    canteenIds = roleCheck.user.org_id ? [roleCheck.user.org_id] : [];
+  }
+
+  if (canteenIds.length === 0) {
+    canteenIds = ['__none__'];
   }
 
   try {
-    const { searchParams } = new URL(request.url);
-    // 使用本地时区日期，避免 UTC 偏差
-    const localDate = new Date();
-    const today = searchParams.get('date') || `${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, '0')}-${String(localDate.getDate()).padStart(2, '0')}`;
-    const trend_days = parseInt(searchParams.get('trend_days') || '7');
-    const canteen_id = searchParams.get('canteen_id');
+    // ---- KPI: total revenue & expense for the selected range ----
+    const [revRes, expRes] = await Promise.all([
+      supabase.from('revenue_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('record_date', fmt(startDate)).lte('record_date', fmt(endDate)),
+      supabase.from('expense_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('expense_date', fmt(startDate)).lte('expense_date', fmt(endDate)),
+    ]);
 
-    const client = getSupabaseClient();
-
-    // 获取可见的食堂列表
-    let canteenIds: string[] = [];
-    if (user.role_code === RoleCode.CANTEEN_MANAGER) {
-      canteenIds = [user.org_id!];
-    } else if (user.role_code === RoleCode.STALL_MANAGER) {
-      const { data: stall } = await client
-        .from('stalls')
-        .select('canteen_id')
-        .eq('id', user.org_id)
-        .maybeSingle();
-      canteenIds = stall ? [stall.canteen_id] : [];
-    } else if (user.role_code === RoleCode.COMPANY_MANAGER) {
-      const { data: canteens } = await client
-        .from('canteens')
-        .select('id')
-        .eq('company_id', user.org_id);
-      canteenIds = (canteens || []).map((c: { id: string }) => c.id);
-    } else {
-      // SYSTEM_DEVELOPER: 看所有
-      const { data: canteens } = await client
-        .from('canteens')
-        .select('id');
-      canteenIds = (canteens || []).map((c: { id: string }) => c.id);
-    }
-
-    if (canteen_id) {
-      canteenIds = canteenIds.filter(id => id === canteen_id);
-    }
-
-    if (canteenIds.length === 0) {
-      return NextResponse.json({
-        success: true,
-        data: {
-          kpi: { total_revenue: '0', total_expense: '0', gross_profit: '0', gross_margin: '0' },
-          canteen_revenue: [],
-          stall_ranking: [],
-          revenue_trend: [],
-          expense_composition: [],
-          material_trend: [],
-          daily_detail: [],
-          profit_trend: [],
-        },
-      });
-    }
-
-    // 1. KPI 卡片 - 今日数据
-    const { data: todayRevenue } = await client
-      .from('revenue_records')
-      .select('amount')
-      .eq('is_active', true)
-      .eq('record_date', today)
-      .in('canteen_id', canteenIds);
-
-    const { data: todayExpense } = await client
-      .from('expense_records')
-      .select('amount, category')
-      .eq('is_active', true)
-      .eq('expense_date', today)
-      .in('canteen_id', canteenIds);
-
-    const totalRevenue = (todayRevenue || []).reduce((sum: number, r: { amount: string }) => sum + parseFloat(r.amount || '0'), 0);
-    const totalExpense = (todayExpense || []).reduce((sum: number, r: { amount: string }) => sum + parseFloat(r.amount || '0'), 0);
+    const totalRevenue = (revRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const totalExpense = (expRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
     const grossProfit = totalRevenue - totalExpense;
-    const grossMargin = totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0';
+    const grossMargin = totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0.0';
 
-    // 2. 食堂营收对比
-    const { data: canteenRevenue } = await client
+    // ---- Weekly KPIs ----
+    const [weekRevRes, weekExpRes] = await Promise.all([
+      supabase.from('revenue_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('record_date', fmt(weekStart)).lte('record_date', fmt(weekEnd)),
+      supabase.from('expense_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('expense_date', fmt(weekStart)).lte('expense_date', fmt(weekEnd)),
+    ]);
+
+    const weekRevenue = (weekRevRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const weekExpense = (weekExpRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const weekGrossProfit = weekRevenue - weekExpense;
+
+    // ---- Monthly KPIs ----
+    const [monthRevRes, monthExpRes] = await Promise.all([
+      supabase.from('revenue_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('record_date', fmt(monthStart)).lte('record_date', fmt(monthEnd)),
+      supabase.from('expense_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('expense_date', fmt(monthStart)).lte('expense_date', fmt(monthEnd)),
+    ]);
+
+    const monthRevenue = (monthRevRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const monthExpense = (monthExpRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const monthGrossProfit = monthRevenue - monthExpense;
+
+    // ---- Canteen revenue breakdown ----
+    const { data: canteenRevData } = await supabase
       .from('revenue_records')
       .select('canteen_id, amount, canteens(name)')
+      .in('canteen_id', canteenIds)
       .eq('is_active', true)
-      .eq('record_date', today)
-      .in('canteen_id', canteenIds);
+      .gte('record_date', fmt(startDate))
+      .lte('record_date', fmt(endDate));
 
     const canteenRevenueMap = new Map<string, { name: string; amount: number }>();
-    (canteenRevenue || []).forEach((r: Record<string, unknown>) => {
-      const canteenId = r.canteen_id as string;
-      const existing = canteenRevenueMap.get(canteenId);
-      const amt = parseFloat((r.amount as string) || '0');
-      const canteens = r.canteens as { name: string } | { name: string }[] | null;
-      const name = Array.isArray(canteens) ? canteens[0]?.name : (canteens as { name: string } | null)?.name || '未知';
+    for (const r of (canteenRevData || [])) {
+      const cName = ((r as Record<string, unknown>).canteens as unknown as { name: string } | null)?.name || '未知';
+      const existing = canteenRevenueMap.get((r as Record<string, unknown>).canteen_id as string);
       if (existing) {
-        existing.amount += amt;
+        existing.amount += Number((r as Record<string, unknown>).amount || 0);
       } else {
-        canteenRevenueMap.set(canteenId, { name, amount: amt });
+        canteenRevenueMap.set((r as Record<string, unknown>).canteen_id as string, { name: cName, amount: Number((r as Record<string, unknown>).amount || 0) });
       }
-    });
+    }
+    const canteen_comparison = Array.from(canteenRevenueMap.values());
 
-    // 3. 档口营收排行 Top5
-    const { data: stallRevenue } = await client
+    // ---- Stall ranking ----
+    const { data: stallRevData } = await supabase
       .from('revenue_records')
       .select('stall_id, amount, stalls(name)')
+      .in('canteen_id', canteenIds)
       .eq('is_active', true)
-      .eq('record_date', today)
-      .in('canteen_id', canteenIds);
+      .gte('record_date', fmt(startDate))
+      .lte('record_date', fmt(endDate));
 
-    const stallRevenueMap = new Map<string, { name: string; amount: number }>();
-    (stallRevenue || []).forEach((r: Record<string, unknown>) => {
-      const stallId = r.stall_id as string;
-      const existing = stallRevenueMap.get(stallId);
-      const amt = parseFloat((r.amount as string) || '0');
-      const stalls = r.stalls as { name: string } | { name: string }[] | null;
-      const name = Array.isArray(stalls) ? stalls[0]?.name : (stalls as { name: string } | null)?.name || '未知';
+    const stallMap = new Map<string, { name: string; amount: number }>();
+    for (const r of (stallRevData || [])) {
+      const sName = ((r as Record<string, unknown>).stalls as unknown as { name: string } | null)?.name || '未知';
+      const existing = stallMap.get((r as Record<string, unknown>).stall_id as string);
       if (existing) {
-        existing.amount += amt;
+        existing.amount += Number((r as Record<string, unknown>).amount || 0);
       } else {
-        stallRevenueMap.set(stallId, { name, amount: amt });
+        stallMap.set((r as Record<string, unknown>).stall_id as string, { name: sName, amount: Number((r as Record<string, unknown>).amount || 0) });
       }
-    });
-    const stallRanking = Array.from(stallRevenueMap.values())
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 5);
+    }
+    const stall_ranking = Array.from(stallMap.values()).sort((a, b) => b.amount - a.amount);
 
-    // 4. 营收趋势（近N天）
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - trend_days);
-    const startDateStr = startDate.toISOString().slice(0, 10);
+    // ---- Revenue trend (daily) ----
+    const revenueTrendMap = new Map<string, number>();
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      revenueTrendMap.set(fmt(d), 0);
+    }
 
-    const { data: trendData } = await client
+    const { data: trendData } = await supabase
       .from('revenue_records')
       .select('record_date, amount')
+      .in('canteen_id', canteenIds)
       .eq('is_active', true)
-      .gte('record_date', startDateStr)
-      .lte('record_date', today)
-      .in('canteen_id', canteenIds);
+      .gte('record_date', fmt(startDate))
+      .lte('record_date', fmt(endDate));
 
-    const revenueByDate = new Map<string, number>();
-    (trendData || []).forEach((r: { record_date: string; amount: string }) => {
-      const existing = revenueByDate.get(r.record_date) || 0;
-      revenueByDate.set(r.record_date, existing + parseFloat(r.amount || '0'));
-    });
+    for (const r of (trendData || [])) {
+      const date = (r as Record<string, unknown>).record_date as string;
+      const amount = Number((r as Record<string, unknown>).amount || 0);
+      revenueTrendMap.set(date, (revenueTrendMap.get(date) || 0) + amount);
+    }
+    const revenue_trend = Array.from(revenueTrendMap.entries()).map(([date, amount]) => ({ date, amount: amount.toFixed(2) }));
 
-    // 5. 支出构成
-    const expenseByCategory = new Map<string, number>();
-    (todayExpense || []).forEach((r: { amount: string; category: string }) => {
-      const existing = expenseByCategory.get(r.category) || 0;
-      expenseByCategory.set(r.category, existing + parseFloat(r.amount || '0'));
-    });
-
-    // 6. 食材领用趋势
-    const { data: materialTrend } = await client
+    // ---- Expense composition ----
+    const { data: expCompData } = await supabase
       .from('expense_records')
-      .select('expense_date, amount, canteen_id, canteens(name)')
+      .select('category, amount')
+      .in('canteen_id', canteenIds)
       .eq('is_active', true)
-      .eq('category', '食材采购')
-      .gte('expense_date', startDateStr)
-      .lte('expense_date', today)
-      .in('canteen_id', canteenIds);
+      .gte('expense_date', fmt(startDate))
+      .lte('expense_date', fmt(endDate));
 
-    const materialByCanteenDate = new Map<string, Map<string, number>>();
-    (materialTrend || []).forEach((r: Record<string, unknown>) => {
-      const cId = r.canteen_id as string;
-      if (!materialByCanteenDate.has(cId)) {
-        materialByCanteenDate.set(cId, new Map());
+    const expCompMap = new Map<string, number>();
+    for (const r of (expCompData || [])) {
+      const cat = (r as Record<string, unknown>).category as string;
+      const amount = Number((r as Record<string, unknown>).amount || 0);
+      expCompMap.set(cat, (expCompMap.get(cat) || 0) + amount);
+    }
+    const expense_breakdown = Array.from(expCompMap.entries()).map(([category, amount]) => ({ category, amount: amount.toFixed(2) }));
+
+    // ---- Daily detail for table ----
+    const { data: dailyDetailRaw } = await supabase
+      .from('revenue_records')
+      .select('canteen_id, record_date, amount, canteens(name)')
+      .in('canteen_id', canteenIds)
+      .eq('is_active', true)
+      .gte('record_date', fmt(startDate))
+      .lte('record_date', fmt(endDate));
+
+    const dailyDetailMap = new Map<string, { canteen_name: string; revenue: number }>();
+    for (const r of (dailyDetailRaw || [])) {
+      const cName = ((r as Record<string, unknown>).canteens as unknown as { name: string }[] | null)?.[0]?.name || '未知';
+      const date = (r as Record<string, unknown>).record_date as string;
+      const amount = Number((r as Record<string, unknown>).amount || 0);
+      const key = `${date}_${(r as Record<string, unknown>).canteen_id}`;
+      const existing = dailyDetailMap.get(key);
+      if (existing) {
+        existing.revenue += amount;
+      } else {
+        dailyDetailMap.set(key, { canteen_name: cName, revenue: amount });
       }
-      const dateMap = materialByCanteenDate.get(cId)!;
-      const ed = r.expense_date as string;
-      dateMap.set(ed, (dateMap.get(ed) || 0) + parseFloat((r.amount as string) || '0'));
-    });
-
-    // 7. 当日明细
-    const { data: dailyDetail } = await client
-      .from('canteens')
-      .select('id, name')
-      .in('id', canteenIds);
-
-    const dailyDetailResult = [];
-    for (const c of dailyDetail || []) {
-      const cRev = (canteenRevenue || [])
-        .filter((r: { canteen_id: string }) => r.canteen_id === c.id)
-        .reduce((sum: number, r: { amount: string }) => sum + parseFloat(r.amount || '0'), 0);
-      const cExp = (todayExpense || [])
-        .filter((r: { amount: string }) => true)
-        .reduce((sum: number) => sum, 0); // simplified
-      // Need to recalculate per-canteen expense
-      const { data: canteenExpenseData } = await client
-        .from('expense_records')
-        .select('amount')
-        .eq('is_active', true)
-        .eq('expense_date', today)
-        .eq('canteen_id', c.id);
-      const cExpense = (canteenExpenseData || []).reduce((sum: number, r: { amount: string }) => sum + parseFloat(r.amount || '0'), 0);
-      const cProfit = cRev - cExpense;
-      const cMargin = cRev > 0 ? ((cProfit / cRev) * 100).toFixed(1) : '0';
-      dailyDetailResult.push({
-        canteen_id: c.id,
-        canteen_name: c.name,
-        revenue: cRev.toFixed(2),
-        expense: cExpense.toFixed(2),
-        gross_profit: cProfit.toFixed(2),
-        gross_margin: cMargin,
-      });
     }
 
-    // 8. 毛利趋势
-    const { data: expenseTrendData } = await client
+    const { data: dailyExpRaw } = await supabase
       .from('expense_records')
-      .select('expense_date, amount')
+      .select('canteen_id, expense_date, amount')
+      .in('canteen_id', canteenIds)
       .eq('is_active', true)
-      .gte('expense_date', startDateStr)
-      .lte('expense_date', today)
-      .in('canteen_id', canteenIds);
+      .gte('expense_date', fmt(startDate))
+      .lte('expense_date', fmt(endDate));
 
-    const expenseByDate = new Map<string, number>();
-    (expenseTrendData || []).forEach((r: { expense_date: string; amount: string }) => {
-      const existing = expenseByDate.get(r.expense_date) || 0;
-      expenseByDate.set(r.expense_date, existing + parseFloat(r.amount || '0'));
-    });
-
-    // Build date range
-    const allDates: string[] = [];
-    const d = new Date(startDateStr);
-    while (d.toISOString().slice(0, 10) <= today) {
-      allDates.push(d.toISOString().slice(0, 10));
-      d.setDate(d.getDate() + 1);
+    const dailyExpMap = new Map<string, number>();
+    for (const r of (dailyExpRaw || [])) {
+      const key = `${(r as Record<string, unknown>).expense_date}_${(r as Record<string, unknown>).canteen_id}`;
+      dailyExpMap.set(key, (dailyExpMap.get(key) || 0) + Number((r as Record<string, unknown>).amount || 0));
     }
 
-    const profitTrend = allDates.map(date => ({
+    const daily_detail = Array.from(dailyDetailMap.entries()).map(([key, val]) => {
+      const [date] = key.split('_');
+      const expense = dailyExpMap.get(key) || 0;
+      return { date, ...val, expense, profit: val.revenue - expense };
+    }).sort((a, b) => b.date.localeCompare(a.date));
+
+    // ---- Profit trend (daily) ----
+    const profitTrendMap = new Map<string, { revenue: number; expense: number; profit: number }>();
+    for (let i = 0; i < days; i++) {
+      const d = new Date(startDate);
+      d.setDate(d.getDate() + i);
+      profitTrendMap.set(fmt(d), { revenue: 0, expense: 0, profit: 0 });
+    }
+
+    for (const r of (trendData || [])) {
+      const date = (r as Record<string, unknown>).record_date as string;
+      const amount = Number((r as Record<string, unknown>).amount || 0);
+      const existing = profitTrendMap.get(date);
+      if (existing) existing.revenue += amount;
+    }
+
+    for (const r of (dailyExpRaw || [])) {
+      const date = (r as Record<string, unknown>).expense_date as string;
+      const amount = Number((r as Record<string, unknown>).amount || 0);
+      const existing = profitTrendMap.get(date);
+      if (existing) existing.expense += amount;
+    }
+
+    for (const [, val] of profitTrendMap) {
+      val.profit = val.revenue - val.expense;
+    }
+
+    const profit_trend = Array.from(profitTrendMap.entries()).map(([date, val]) => ({
       date,
-      revenue: (revenueByDate.get(date) || 0).toFixed(2),
-      expense: (expenseByDate.get(date) || 0).toFixed(2),
-      profit: ((revenueByDate.get(date) || 0) - (expenseByDate.get(date) || 0)).toFixed(2),
+      revenue: val.revenue.toFixed(2),
+      expense: val.expense.toFixed(2),
+      profit: val.profit.toFixed(2),
     }));
 
-    return NextResponse.json({
+    return NextResponse.json<ApiResponse>({
       success: true,
       data: {
         kpi: {
@@ -251,33 +257,26 @@ export async function GET(request: NextRequest) {
           total_expense: totalExpense.toFixed(2),
           gross_profit: grossProfit.toFixed(2),
           gross_margin: grossMargin,
+          week_revenue: weekRevenue.toFixed(2),
+          week_expense: weekExpense.toFixed(2),
+          week_gross_profit: weekGrossProfit.toFixed(2),
+          month_revenue: monthRevenue.toFixed(2),
+          month_expense: monthExpense.toFixed(2),
+          month_gross_profit: monthGrossProfit.toFixed(2),
         },
-        canteen_revenue: Array.from(canteenRevenueMap.values()),
-        stall_ranking: stallRanking,
-        revenue_trend: allDates.map(date => ({
-          date,
-          amount: (revenueByDate.get(date) || 0).toFixed(2),
-        })),
-        expense_composition: Array.from(expenseByCategory.entries()).map(([category, amount]) => ({
-          category,
-          amount: amount.toFixed(2),
-        })),
-        material_trend: Array.from(materialByCanteenDate.entries()).map(([canteenId, dateMap]) => {
-          const canteen = (dailyDetail || []).find((c: { id: string }) => c.id === canteenId);
-          return {
-            canteen_name: canteen?.name || '未知',
-            data: allDates.map(date => ({
-              date,
-              amount: (dateMap.get(date) || 0).toFixed(2),
-            })),
-          };
-        }),
-        daily_detail: dailyDetailResult,
-        profit_trend: profitTrend,
+        canteen_comparison,
+        stall_ranking,
+        revenue_trend,
+        expense_breakdown,
+        daily_detail,
+        profit_trend,
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : '查询失败';
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    const message = err instanceof Error ? err.message : '仪表盘查询失败';
+    return NextResponse.json<ApiResponse>(
+      { success: false, error: message },
+      { status: 500 }
+    );
   }
 }

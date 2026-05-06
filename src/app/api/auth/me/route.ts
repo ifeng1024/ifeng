@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser, unauthorized } from '@/lib/auth/guard';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { ApiResponse, DbUser } from '@/lib/auth/types';
-import { RoleLabel } from '@/lib/auth/constants';
+import { RoleLabel, RoleCode } from '@/lib/auth/constants';
 
 export async function GET(request: NextRequest) {
   const user = getCurrentUser(request);
@@ -33,6 +33,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Look up company name and org name based on role
+    let company_name: string | null = null;
+    let org_name: string | null = null;
+
+    if (dbUser.role_code === RoleCode.COMPANY_MANAGER && dbUser.org_id) {
+      const { data: company } = await client.from('companies').select('name').eq('id', dbUser.org_id).single();
+      company_name = company?.name || null;
+      org_name = company_name;
+    } else if (dbUser.role_code === RoleCode.CANTEEN_MANAGER && dbUser.org_id) {
+      const { data: canteen } = await client.from('canteens').select('name, company_id, companies(name)').eq('id', dbUser.org_id).single();
+      org_name = canteen?.name || null;
+      if (canteen) {
+        company_name = ((canteen as Record<string, unknown>).companies as unknown as { name: string }[] | null)?.[0]?.name || null;
+      }
+    } else if (dbUser.role_code === RoleCode.STALL_MANAGER && dbUser.org_id) {
+      const { data: stall } = await client.from('stalls').select('name, canteen_id, canteens(name, company_id, companies(name))').eq('id', dbUser.org_id).single();
+      org_name = stall?.name || null;
+      if (stall) {
+        const canteen = (stall as Record<string, unknown>).canteens as unknown as { name: string; company_id: string; companies: { name: string }[] } | null;
+        if (canteen) {
+          company_name = canteen.companies?.[0]?.name || null;
+        }
+      }
+    }
+
     return NextResponse.json<ApiResponse>({
       success: true,
       data: {
@@ -48,6 +73,8 @@ export async function GET(request: NextRequest) {
         is_disabled: dbUser.is_disabled,
         expires_at: dbUser.expires_at,
         created_at: dbUser.created_at,
+        company_name,
+        org_name,
       },
     });
   } catch (err) {

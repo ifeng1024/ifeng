@@ -18,9 +18,6 @@ interface CreateUserRequest {
 /**
  * POST /api/users
  * 创建用户
- * - SYSTEM_DEVELOPER: 可创建任意角色
- * - COMPANY_MANAGER: 可创建 CANTEEN_MANAGER, STALL_MANAGER
- * - CANTEEN_MANAGER: 可创建 STALL_MANAGER
  */
 export async function POST(request: NextRequest) {
   const currentUser = getCurrentUser(request);
@@ -47,7 +44,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // COMPANY_MANAGER can only create CANTEEN_MANAGER and STALL_MANAGER
     if (currentUser.role_code === RoleCode.COMPANY_MANAGER && !['CANTEEN_MANAGER', 'STALL_MANAGER'].includes(body.role_code)) {
       return NextResponse.json<ApiResponse>(
         { success: false, error: '公司负责人只能创建食堂负责人和档口负责人' },
@@ -55,7 +51,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // CANTEEN_MANAGER can only create STALL_MANAGER
     if (currentUser.role_code === RoleCode.CANTEEN_MANAGER && body.role_code !== 'STALL_MANAGER') {
       return NextResponse.json<ApiResponse>(
         { success: false, error: '食堂负责人只能创建档口负责人' },
@@ -65,7 +60,6 @@ export async function POST(request: NextRequest) {
 
     const client = getSupabaseClient();
 
-    // Check username uniqueness
     const { data: existing, error: checkError } = await client
       .from('users')
       .select('id')
@@ -86,7 +80,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create user
     const passwordHash = await hashPassword(body.password);
     const insertData: Record<string, unknown> = {
       username: body.username.trim(),
@@ -101,7 +94,7 @@ export async function POST(request: NextRequest) {
     const { data, error } = await client
       .from('users')
       .insert(insertData)
-      .select('id, username, real_name, role_code, org_id, is_disabled, expires_at, is_active, created_at')
+      .select('id, username, real_name, phone, email, role_code, org_id, is_disabled, expires_at, is_active, created_at')
       .single();
 
     if (error) {
@@ -127,9 +120,6 @@ export async function POST(request: NextRequest) {
 /**
  * GET /api/users
  * 获取用户列表
- * - SYSTEM_DEVELOPER: 全部用户
- * - COMPANY_MANAGER: 自己公司下的用户
- * - CANTEEN_MANAGER: 自己食堂下的用户
  */
 export async function GET(request: NextRequest) {
   const currentUser = getCurrentUser(request);
@@ -151,7 +141,6 @@ export async function GET(request: NextRequest) {
     }
 
     if (currentUser.role_code === RoleCode.COMPANY_MANAGER) {
-      // Get all canteens under this company, then get users with org_id in those canteens + the company itself
       const { data: canteens } = await client
         .from('canteens')
         .select('id')
@@ -159,7 +148,6 @@ export async function GET(request: NextRequest) {
       const canteenIds = (canteens || []).map((c: { id: string }) => c.id);
       const orgIds = [currentUser.org_id, ...canteenIds];
 
-      // Get stalls under these canteens
       const { data: stalls } = await client
         .from('stalls')
         .select('id')
@@ -177,7 +165,6 @@ export async function GET(request: NextRequest) {
     }
 
     if (currentUser.role_code === RoleCode.CANTEEN_MANAGER) {
-      // Get stalls under this canteen
       const { data: stalls } = await client
         .from('stalls')
         .select('id')

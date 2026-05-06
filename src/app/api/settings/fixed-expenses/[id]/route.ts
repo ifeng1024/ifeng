@@ -5,7 +5,7 @@ import type { ApiResponse } from '@/lib/auth/types';
 
 /**
  * PUT /api/settings/fixed-expenses/[id]
- * 编辑固定支出（修改金额时同步更新日期范围内已自动生成的支出记录）
+ * 编辑固定支出。若金额改变，级联更新起止日期范围内的自动生成记录。
  */
 export async function PUT(
   request: NextRequest,
@@ -19,69 +19,96 @@ export async function PUT(
 
   const { id } = await params;
   const body = (await request.json()) as Record<string, unknown>;
-  const { category, amount, note, start_date, end_date } = body;
+  const { name, amount, start_date, end_date } = body;
 
   const supabase = getSupabaseClient();
 
-  // 查找原记录
-  const { data: existing } = await supabase
+  // Check existing fixed expense
+  const { data: existing, error: fetchError } = await supabase
     .from('fixed_expenses')
     .select('*')
     .eq('id', id)
-    .eq('is_active', true)
     .single();
 
-  if (!existing) return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
+  if (fetchError || !existing) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '固定支出不存在' }, { status: 404 });
+  }
 
   const access = await checkCanteenAccess(roleCheck.user, (existing as Record<string, unknown>).canteen_id as string);
   if (!access.ok) return access.response;
 
-  const newAmount = amount !== undefined ? String(amount) : (existing as Record<string, unknown>).amount as string;
-  const newCategory = (category as string) || ((existing as Record<string, unknown>).category as string);
-  const newStartDate = (start_date as string) || ((existing as Record<string, unknown>).start_date as string);
-  const newEndDate = (end_date as string) || ((existing as Record<string, unknown>).end_date as string) || null;
+  const updateData: Record<string, unknown> = {};
+  if (name !== undefined) updateData.type = name;
+  if (amount !== undefined) updateData.amount = String(amount);
+  if (start_date !== undefined) updateData.start_date = start_date;
+  if (end_date !== undefined) updateData.end_date = end_date;
 
-  // 更新固定支出记录
-  const { data, error } = await supabase
+  const { data: updated, error: updateError } = await supabase
     .from('fixed_expenses')
-    .update({
-      category: newCategory,
-      amount: newAmount,
-      note: note !== undefined ? ((note as string) || null) : (existing as Record<string, unknown>).note as string | null,
-      start_date: newStartDate,
-      end_date: newEndDate,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updateData)
     .eq('id', id)
     .select()
     .single();
 
-  if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
-
-  // 如果金额发生变化，且存在日期范围，则同步更新该范围内已自动生成的支出记录
-  if (amount !== undefined && String(amount) !== (existing as Record<string, unknown>).amount && newStartDate) {
-    const updateQuery = supabase
-      .from('expense_records')
-      .update({
-        amount: newAmount,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('fixed_expense_id', id)
-      .eq('is_auto_generated', true)
-      .gte('expense_date', newStartDate);
-
-    if (newEndDate) {
-      void updateQuery.lte('expense_date', newEndDate);
-    }
-    await updateQuery;
+  if (updateError) {
+    return NextResponse.json<ApiResponse>({ success: false, error: `更新失败: ${updateError.message}` }, { status: 500 });
   }
 
-  return NextResponse.json<ApiResponse>({ success: true, data });
+  // If amount or date range changed, cascade update auto-generated expense records
+  const newName = (name !== undefined ? name : (existing as Record<string, unknown>).type) as string;
+  const newAmount = Number(amount !== undefined ? amount : (existing as Record<string, unknown>).amount);
+  const newStartDate = (start_date !== undefined ? start_date : (existing as Record<string, unknown>).start_date) as string;
+  const newEndDate = (end_date !== undefined ? end_date : (existing as Record<string, unknown>).end_date) as string;
+
+  if (amount !== undefined || start_date !== undefined || end_date !== undefined || name !== undefined) {
+    // Delete old auto-generated records
+    await supabase
+      .from('expense_records')
+      .delete()
+      .eq('fixed_expense_id', id)
+      .eq('is_auto_generated', true);
+
+    // Regenerate records with new amount and date range
+    const sDate = new Date(newStartDate + 'T00:00:00');
+    const eDate = new Date(newEndDate + 'T00:00:00');
+    const records: Record<string, unknown>[] = [];
+
+    const current = new Date(sDate);
+    while (current <= eDate) {
+      const year = current.getFullYear();
+      const month = current.getMonth();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      const dailyAmount = (newAmount / daysInMonth).toFixed(2);
+      const dateStr = current.toISOString().slice(0, 10);
+
+      records.push({
+        canteen_id: (existing as Record<string, unknown>).canteen_id,
+        expense_date: dateStr,
+        category: newName,
+        amount: dailyAmount,
+        is_auto_generated: true,
+        fixed_expense_id: id,
+        created_by: roleCheck.user.user_id,
+      });
+
+      current.setDate(current.getDate() + 1);
+    }
+
+    if (records.length > 0) {
+      const batchSize = 100;
+      for (let i = 0; i < records.length; i += batchSize) {
+        const batch = records.slice(i, i + batchSize);
+        await supabase.from('expense_records').insert(batch);
+      }
+    }
+  }
+
+  return NextResponse.json<ApiResponse>({ success: true, data: updated });
 }
 
 /**
  * DELETE /api/settings/fixed-expenses/[id]
- * 软删除固定支出
+ * 删除固定支出，同时删除对应的自动生成支出记录
  */
 export async function DELETE(
   request: NextRequest,
@@ -96,11 +123,35 @@ export async function DELETE(
   const { id } = await params;
   const supabase = getSupabaseClient();
 
+  const { data: existing, error: fetchError } = await supabase
+    .from('fixed_expenses')
+    .select('canteen_id')
+    .eq('id', id)
+    .single();
+
+  if (fetchError || !existing) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '固定支出不存在' }, { status: 404 });
+  }
+
+  const access = await checkCanteenAccess(roleCheck.user, (existing as Record<string, unknown>).canteen_id as string);
+  if (!access.ok) return access.response;
+
+  // Delete auto-generated expense records first
+  await supabase
+    .from('expense_records')
+    .delete()
+    .eq('fixed_expense_id', id)
+    .eq('is_auto_generated', true);
+
+  // Soft delete fixed expense
   const { error } = await supabase
     .from('fixed_expenses')
-    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .update({ is_active: false })
     .eq('id', id);
 
-  if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
-  return NextResponse.json<ApiResponse>({ success: true });
+  if (error) {
+    return NextResponse.json<ApiResponse>({ success: false, error: `删除失败: ${error.message}` }, { status: 500 });
+  }
+
+  return NextResponse.json<ApiResponse>({ success: true, data: null });
 }

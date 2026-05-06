@@ -35,10 +35,7 @@ export async function POST(
       canteen_id: canteenId,
       name: String(body.name).trim(),
     };
-    if (body.has_delivery !== undefined) insertData.has_delivery = !!body.has_delivery;
-    if (body.has_takeout !== undefined) insertData.has_takeout = !!body.has_takeout;
-    if (body.contact_name) insertData.contact_name = body.contact_name;
-    if (body.contact_phone) insertData.contact_phone = body.contact_phone;
+    if (body.manager_id) insertData.manager_id = body.manager_id;
 
     const { data, error } = await client
       .from('stalls')

@@ -95,6 +95,46 @@ export const stalls = pgTable(
  * - STALL_MANAGER   → org_id 指向 stalls.id
  * - SYSTEM_DEVELOPER / REGULAR_USER → org_id 为 null
  */
+/**
+ * 餐别表
+ * 隶属于食堂，营收录入时的餐别下拉数据源
+ */
+export const meal_types = pgTable(
+	"meal_types",
+	{
+		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+		canteen_id: varchar("canteen_id", { length: 36 }).notNull().references(() => canteens.id, { onDelete: "cascade" }),
+		name: varchar("name", { length: 64 }).notNull(),
+		is_active: boolean("is_active").default(true).notNull(),
+		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updated_at: timestamp("updated_at", { withTimezone: true }),
+	},
+	(table) => [
+		index("meal_types_canteen_id_idx").on(table.canteen_id),
+		index("meal_types_is_active_idx").on(table.is_active),
+	]
+);
+
+/**
+ * 营收类型表
+ * 隶属于食堂，营收录入时的类型下拉数据源
+ */
+export const revenue_types = pgTable(
+	"revenue_types",
+	{
+		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+		canteen_id: varchar("canteen_id", { length: 36 }).notNull().references(() => canteens.id, { onDelete: "cascade" }),
+		name: varchar("name", { length: 64 }).notNull(),
+		is_active: boolean("is_active").default(true).notNull(),
+		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+		updated_at: timestamp("updated_at", { withTimezone: true }),
+	},
+	(table) => [
+		index("revenue_types_canteen_id_idx").on(table.canteen_id),
+		index("revenue_types_is_active_idx").on(table.is_active),
+	]
+);
+
 export const users = pgTable(
 	"users",
 	{

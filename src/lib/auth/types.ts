@@ -141,3 +141,59 @@ export interface DbStall {
   created_at: string;
   updated_at: string | null;
 }
+
+/**
+ * 创建餐别请求体
+ */
+export interface CreateMealTypeRequest {
+  canteen_id: string;
+  name: string;
+}
+
+/**
+ * 更新餐别请求体
+ */
+export interface UpdateMealTypeRequest {
+  name?: string;
+  is_active?: boolean;
+}
+
+/**
+ * 数据库餐别记录类型
+ */
+export interface DbMealType {
+  id: string;
+  canteen_id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string | null;
+}
+
+/**
+ * 创建营收类型请求体
+ */
+export interface CreateRevenueTypeRequest {
+  canteen_id: string;
+  name: string;
+}
+
+/**
+ * 更新营收类型请求体
+ */
+export interface UpdateRevenueTypeRequest {
+  name?: string;
+  is_active?: boolean;
+}
+
+/**
+ * 数据库营收类型记录类型
+ */
+export interface DbRevenueType {
+  id: string;
+  canteen_id: string;
+  name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string | null;
+}

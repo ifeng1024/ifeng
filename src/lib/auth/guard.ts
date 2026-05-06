@@ -168,6 +168,19 @@ export async function checkCanteenAccess(
     return { ok: true, canteen };
   }
 
+  // 档口负责人：只能操作自己档口所属的食堂
+  if (user.role_code === RoleCode.STALL_MANAGER) {
+    const { data: stall, error: stallError } = await client
+      .from('stalls')
+      .select('canteen_id')
+      .eq('id', user.org_id)
+      .maybeSingle();
+    if (stallError || !stall || stall.canteen_id !== canteenId) {
+      return { ok: false, response: forbidden('无权操作该食堂') };
+    }
+    return { ok: true, canteen };
+  }
+
   return { ok: false, response: forbidden('无权操作该食堂') };
 }
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireMinRole, unauthorized } from '@/lib/auth/guard';
-import { RoleCode, RoleLevel } from '@/lib/auth/constants';
+import { getCurrentUser, unauthorized } from '@/lib/auth/guard';
+import { RoleCode } from '@/lib/auth/constants';
 import { hashPassword } from '@/lib/auth/password';
 import type { ApiResponse } from '@/lib/auth/types';
 
@@ -66,7 +66,7 @@ export async function PUT(
 
   // Build update object based on role permissions
   const updateData: Record<string, unknown> = {};
-  let passwordChanged = false;
+
 
   if (user.role_code === RoleCode.SYSTEM_DEVELOPER) {
     // Can edit anything
@@ -78,7 +78,7 @@ export async function PUT(
     // Developer can set password for any user
     if (body.password && typeof body.password === 'string' && body.password.length >= 6) {
       updateData.password_hash = await hashPassword(body.password);
-      passwordChanged = true;
+
     }
     // Developer can update company name for COMPANY_MANAGER users
     if (body.company_name !== undefined && targetUser.role_code === RoleCode.COMPANY_MANAGER) {
@@ -102,7 +102,7 @@ export async function PUT(
     // Company manager can set password for subordinate users
     if (body.password && typeof body.password === 'string' && body.password.length >= 6) {
       updateData.password_hash = await hashPassword(body.password);
-      passwordChanged = true;
+
     }
   } else if (user.role_code === RoleCode.CANTEEN_MANAGER) {
     // Can only edit stall managers in own canteen
@@ -118,7 +118,7 @@ export async function PUT(
     // Canteen manager can set password for stall managers
     if (body.password && typeof body.password === 'string' && body.password.length >= 6) {
       updateData.password_hash = await hashPassword(body.password);
-      passwordChanged = true;
+
     }
   } else {
     return NextResponse.json<ApiResponse>(

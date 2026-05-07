@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { hashPassword } from '@/lib/auth/password';
 import type { ApiResponse } from '@/lib/auth/types';

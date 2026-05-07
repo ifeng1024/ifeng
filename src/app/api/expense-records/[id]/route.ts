@@ -21,7 +21,7 @@ export async function PUT(
   const { id } = await params;
   const body = (await request.json()) as Record<string, unknown>;
   const {
-    canteen_id, expense_date, category, amount, note, stall_id, supplier_id,
+    canteen_id, category, amount, note, stall_id, supplier_id,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
   } = body;
 

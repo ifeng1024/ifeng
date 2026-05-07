@@ -1,3 +1,2 @@
-import { relations } from "drizzle-orm/relations";
-import {  } from "./schema";
-
+// Drizzle ORM relations - placeholder
+// Relations are defined here when using Drizzle ORM for type-safe queries

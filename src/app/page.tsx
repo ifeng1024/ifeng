@@ -225,7 +225,7 @@ function GroupedBarChart({ data, xKey, bars }: { data: Record<string, unknown>[]
 function DashboardPage() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
-  const [range, setRange] = useState('7d');
+  const [range] = useState('7d');
 
   useEffect(() => {
     const today = new Date().toLocaleDateString('sv-SE');
@@ -248,9 +248,6 @@ function DashboardPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold text-gray-800">数据概览</h2>
-        <select value={range} onChange={e => setRange(e.target.value)} className="border rounded-lg px-3 py-1.5 text-sm">
-          <option value="7d">近7天</option><option value="30d">近30天</option>
-        </select>
       </div>
 
       {/* KPI Cards - Row 1: Today */}
@@ -819,15 +816,13 @@ function StallManagerSection() {
 /* ─── MEAL TYPE MANAGER ─── */
 function MealTypeManager() {
   const [canteens, setCanteens] = useState<Record<string, unknown>[]>([]);
-  const [mealTypes, setMealTypes] = useState<Record<string, unknown>[]>([]);
+  const [, setMealTypes] = useState<Record<string, unknown>[]>([]);
   const [selectedCanteen, setSelectedCanteen] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [newName, setNewName] = useState('');
 
   useEffect(() => { apiFetch<ApiResp>('/api/dropdown/canteens').then(res => { if (res.success && res.data) setCanteens(res.data as Record<string, unknown>[]); }); }, []);
   useEffect(() => { if (!selectedCanteen) { setMealTypes([]); return; } apiFetch<ApiResp>(`/api/meal-types?canteen_id=${selectedCanteen}`).then(res => { if (res.success && res.data) setMealTypes(res.data as Record<string, unknown>[]); }); }, [selectedCanteen]);
-
-  const canteenName = (id: string) => canteens.find(c => c.id === id)?.name as string || '-';
 
   const add = async () => { if (!newName.trim() || !selectedCanteen) return; const res = await apiFetch<ApiResp>('/api/meal-types', { method: 'POST', body: JSON.stringify({ name: newName.trim(), canteen_id: selectedCanteen }) }); if (res.success) { setNewName(''); setShowForm(false); apiFetch<ApiResp>(`/api/meal-types?canteen_id=${selectedCanteen}`).then(res => { if (res.success && res.data) setMealTypes(res.data as Record<string, unknown>[]); }); } else alert(res.error); };
   const del = async (id: string) => { if (!confirm('确认删除？')) return; const res = await apiFetch<ApiResp>(`/api/meal-types/${id}`, { method: 'DELETE' }); if (res.success) apiFetch<ApiResp>(`/api/meal-types?canteen_id=${selectedCanteen}`).then(res => { if (res.success && res.data) setMealTypes(res.data as Record<string, unknown>[]); }); };

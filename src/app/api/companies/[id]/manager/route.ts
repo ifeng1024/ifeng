@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, checkCompanyAccess, CAN_MANAGE_CANTEEN } from '@/lib/auth/guard';
+import { getCurrentUser, requireRoles } from '@/lib/auth/guard';
 import type { ApiResponse, DbCompany } from '@/lib/auth/types';
 
 /**

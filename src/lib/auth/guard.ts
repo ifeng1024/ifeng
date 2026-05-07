@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, extractBearerToken } from './jwt';
 import type { AuthTokenPayload } from './types';
-import { RoleCode, RoleLevel, CAN_MANAGE_CANTEEN, CAN_MANAGE_STALL, CAN_CREATE_COMPANY, CAN_ENTER_REVENUE, CAN_ENTER_EXPENSE } from './constants';
+import { RoleCode, RoleLevel, CAN_MANAGE_CANTEEN, CAN_MANAGE_STALL, CAN_CREATE_COMPANY, CAN_ENTER_REVENUE, CAN_ENTER_EXPENSE, CAN_MANAGE_EXPENSE } from './constants';
 import type { RoleCodeValue } from './constants';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 
@@ -244,4 +244,4 @@ export async function checkStallAccess(
 }
 
 // 导出角色权限常量，供 route handler 直接使用
-export { CAN_CREATE_COMPANY, CAN_MANAGE_CANTEEN, CAN_MANAGE_STALL, CAN_ENTER_REVENUE, CAN_ENTER_EXPENSE };
+export { CAN_CREATE_COMPANY, CAN_MANAGE_CANTEEN, CAN_MANAGE_STALL, CAN_ENTER_REVENUE, CAN_ENTER_EXPENSE, CAN_MANAGE_EXPENSE };

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, checkCanteenAccess, CAN_ENTER_EXPENSE, unauthorized } from '@/lib/auth/guard';
+import { getCurrentUser, requireRoles, checkCanteenAccess, CAN_MANAGE_EXPENSE, unauthorized } from '@/lib/auth/guard';
 import type { ApiResponse } from '@/lib/auth/types';
 
 /**
- * GET /api/expense-records?canteen_id=xxx&start_date=xxx&end_date=xxx&category=xxx
- * 查询支出记录列表
+ * GET /api/expense-records?canteen_id=xxx&start_date=xxx&end_date=xxx&category=xxx&stall_id=xxx&export=1
+ * 查询支出记录列表，支持导出
  */
 export async function GET(request: NextRequest) {
   const user = getCurrentUser(request);
@@ -17,21 +17,28 @@ export async function GET(request: NextRequest) {
   const startDate = searchParams.get('start_date');
   const endDate = searchParams.get('end_date');
   const category = searchParams.get('category');
+  const stallId = searchParams.get('stall_id');
+  const isExport = searchParams.get('export') === '1';
   const page = parseInt(searchParams.get('page') || '1');
   const pageSize = parseInt(searchParams.get('page_size') || '50');
 
   let query = supabase
     .from('expense_records')
-    .select('id, canteen_id, expense_date, category, amount, note, is_auto_generated, fixed_expense_id, product_category_id, product_id, quantity, unit_price, product_spec_id, is_active, created_by, created_at, updated_at, canteens(name)', { count: 'exact' })
+    .select('id, canteen_id, stall_id, expense_date, category, amount, note, is_auto_generated, fixed_expense_id, is_daily_repeat, repeat_group_id, product_category_id, product_id, quantity, unit_price, product_spec_id, is_active, created_by, created_at, updated_at, canteens(name), stalls(name)', { count: isExport ? undefined : 'exact' })
     .eq('is_active', true)
     .order('expense_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    .range((page - 1) * pageSize, page * pageSize - 1);
+    .order('created_at', { ascending: false });
+
+  // Export: no pagination
+  if (!isExport) {
+    query = query.range((page - 1) * pageSize, page * pageSize - 1);
+  }
 
   if (canteenId) query = query.eq('canteen_id', canteenId);
   if (startDate) query = query.gte('expense_date', startDate);
   if (endDate) query = query.lte('expense_date', endDate);
   if (category) query = query.eq('category', category);
+  if (stallId) query = query.eq('stall_id', stallId);
 
   // 权限过滤
   if (user.role_code === 'SYSTEM_DEVELOPER') {
@@ -54,6 +61,7 @@ export async function GET(request: NextRequest) {
     const { data: stall } = await supabase.from('stalls').select('canteen_id').eq('id', user.org_id).maybeSingle();
     if (stall) {
       query = query.eq('canteen_id', stall.canteen_id);
+      if (!stallId) query = query.eq('stall_id', user.org_id);
     } else {
       return NextResponse.json<ApiResponse>({ success: true, data: { records: [], total: 0 } });
     }
@@ -86,14 +94,29 @@ export async function GET(request: NextRequest) {
   const prodNameMap = new Map((prodMap.data || []).map((p: { id: string; name: string }) => [p.id, p.name]));
   const specNameMap = new Map((specMap.data || []).map((s: { id: string; name: string }) => [s.id, s.name]));
 
-  const formatted = records.map(r => ({
+  const formatted: Record<string, unknown>[] = records.map(r => ({
     ...r,
     canteen_name: (r.canteens as Record<string, unknown>)?.name || null,
+    stall_name: (r.stalls as Record<string, unknown>)?.name || null,
     product_category_name: r.product_category_id ? catNameMap.get(r.product_category_id as string) || null : null,
     product_name: r.product_id ? prodNameMap.get(r.product_id as string) || null : null,
     product_spec_name: r.product_spec_id ? specNameMap.get(r.product_spec_id as string) || null : null,
-    canteens: undefined,
   }));
+
+  // Export as CSV
+  if (isExport) {
+    const header = '日期,食堂,档口,类别,金额,备注,是否每天重复';
+    const rows = formatted.map(r =>
+      `${r.expense_date},${r.canteen_name || ''},${r.stall_name || ''},${r.category || ''},${r.amount},${(r.note || '').toString().replace(/,/g, '，')},${r.is_daily_repeat ? '是' : '否'}`
+    );
+    const csv = '\uFEFF' + header + '\n' + rows.join('\n');
+    return new NextResponse(csv, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename=expense_records_${startDate || 'all'}_${endDate || 'all'}.csv`,
+      },
+    });
+  }
 
   return NextResponse.json({ success: true, data: { records: formatted, total: count } });
 }
@@ -101,19 +124,20 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/expense-records
  * 创建支出记录
- * 字段：canteen_id, expense_date, category, amount, note,
- *       product_category_id, product_id, quantity, unit_price, product_spec_id (仅食材采购)
+ * 字段：canteen_id, expense_date, category, amount, note, stall_id(可选),
+ *       is_daily_repeat(可选), product_category_id, product_id, quantity, unit_price, product_spec_id (仅食材采购)
  */
 export async function POST(request: NextRequest) {
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
 
-  const roleCheck = requireRoles(user, CAN_ENTER_EXPENSE);
+  const roleCheck = requireRoles(user, CAN_MANAGE_EXPENSE);
   if (!roleCheck.ok) return roleCheck.response;
 
   const body = (await request.json()) as Record<string, unknown>;
   const {
     canteen_id, expense_date, category, amount, note,
+    stall_id, is_daily_repeat,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
   } = body;
 
@@ -133,6 +157,8 @@ export async function POST(request: NextRequest) {
     category: category as string,
     amount: String(amount),
     note: (note as string) || null,
+    stall_id: (stall_id as string) || null,
+    is_daily_repeat: is_daily_repeat === true,
     created_by: roleCheck.user.user_id,
   };
 
@@ -143,6 +169,33 @@ export async function POST(request: NextRequest) {
     if (quantity !== undefined) insertData.quantity = String(quantity);
     if (unit_price !== undefined) insertData.unit_price = String(unit_price);
     if (product_spec_id) insertData.product_spec_id = product_spec_id as string;
+  }
+
+  // Handle daily repeat: generate records for all days in the month
+  if (is_daily_repeat === true) {
+    const groupId = crypto.randomUUID();
+    insertData.repeat_group_id = groupId;
+
+    const dateStr = expense_date as string;
+    const [year, month] = dateStr.split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+
+    const records: Record<string, unknown>[] = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const d = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      records.push({
+        ...insertData,
+        expense_date: d,
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('expense_records')
+      .insert(records)
+      .select();
+
+    if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
+    return NextResponse.json<ApiResponse>({ success: true, data: data?.[0] || null }, { status: 201 });
   }
 
   const { data, error } = await supabase

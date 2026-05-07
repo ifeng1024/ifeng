@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, CAN_MANAGE_CANTEEN, unauthorized } from '@/lib/auth/guard';
+import { getCurrentUser, unauthorized } from '@/lib/auth/guard';
 import type { ApiResponse } from '@/lib/auth/types';
 
 function localDate(): string {
@@ -13,9 +13,6 @@ function localDate(): string {
 export async function GET(request: NextRequest) {
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
-
-  const roleCheck = requireRoles(user, CAN_MANAGE_CANTEEN);
-  if (!roleCheck.ok) return roleCheck.response;
 
   const { searchParams } = new URL(request.url);
   const dateStr = searchParams.get('date') || localDate();
@@ -45,14 +42,18 @@ export async function GET(request: NextRequest) {
 
   // Get canteen IDs the user can access
   let canteenIds: string[] = [];
-  if (roleCheck.user.role_code === 'SYSTEM_DEVELOPER') {
+  if (user.role_code === 'SYSTEM_DEVELOPER') {
     const { data } = await supabase.from('canteens').select('id').eq('is_active', true);
     canteenIds = (data || []).map((c: { id: string }) => c.id);
-  } else if (roleCheck.user.role_code === 'COMPANY_MANAGER') {
-    const { data } = await supabase.from('canteens').select('id').eq('company_id', roleCheck.user.org_id).eq('is_active', true);
+  } else if (user.role_code === 'COMPANY_MANAGER') {
+    const { data } = await supabase.from('canteens').select('id').eq('company_id', user.org_id).eq('is_active', true);
     canteenIds = (data || []).map((c: { id: string }) => c.id);
-  } else if (roleCheck.user.role_code === 'CANTEEN_MANAGER') {
-    canteenIds = roleCheck.user.org_id ? [roleCheck.user.org_id] : [];
+  } else if (user.role_code === 'CANTEEN_MANAGER') {
+    canteenIds = user.org_id ? [user.org_id] : [];
+  } else if (user.role_code === 'STALL_MANAGER') {
+    // Get the canteen of the stall manager's stall
+    const { data: stall } = await supabase.from('stalls').select('canteen_id').eq('id', user.org_id).maybeSingle();
+    canteenIds = stall ? [stall.canteen_id] : [];
   }
 
   if (canteenIds.length === 0) {
@@ -252,6 +253,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json<ApiResponse>({
       success: true,
       data: {
+        role_code: user.role_code,
+        stall_id: user.role_code === 'STALL_MANAGER' ? user.org_id : null,
         kpi: {
           total_revenue: totalRevenue.toFixed(2),
           total_expense: totalExpense.toFixed(2),

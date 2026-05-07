@@ -147,7 +147,8 @@ async function checkAccountExpiry(
     }
   }
 
-  // 3. 对于食堂/档口负责人，级联查公司有效期
+  // 3. 对于食堂/档口负责人，级联查公司负责人的有效期
+  let companyManagerId: string | null = null;
   if (user.role_code === RoleCode.CANTEEN_MANAGER && user.org_id) {
     const { data: canteen } = await client
       .from('canteens')
@@ -155,6 +156,8 @@ async function checkAccountExpiry(
       .eq('id', user.org_id)
       .maybeSingle();
     if (canteen?.company_id) {
+      companyManagerId = canteen.company_id;
+      // Also check company_params
       const { data: params } = await client
         .from('company_params')
         .select('account_expires_at')
@@ -179,6 +182,7 @@ async function checkAccountExpiry(
         .eq('id', stall.canteen_id)
         .maybeSingle();
       if (canteen?.company_id) {
+        companyManagerId = canteen.company_id;
         const { data: params } = await client
           .from('company_params')
           .select('account_expires_at')
@@ -187,6 +191,25 @@ async function checkAccountExpiry(
         if (params?.account_expires_at && new Date(params.account_expires_at) < now) {
           return { valid: false, message: '账号已过期，请联系开发者' };
         }
+      }
+    }
+  }
+
+  // 4. Check if the company manager's account is expired (cascading block)
+  if (companyManagerId) {
+    const { data: companyMgr } = await client
+      .from('users')
+      .select('expires_at, is_disabled')
+      .eq('org_id', companyManagerId)
+      .eq('role_code', 'COMPANY_MANAGER')
+      .eq('is_active', true)
+      .maybeSingle();
+    if (companyMgr) {
+      if (companyMgr.is_disabled) {
+        return { valid: false, message: '所属公司账号已被禁用，无法登录' };
+      }
+      if (companyMgr.expires_at && new Date(companyMgr.expires_at) < now) {
+        return { valid: false, message: '所属公司账号已过期，无法登录' };
       }
     }
   }

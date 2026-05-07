@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, checkCanteenAccess, checkStallAccess, CAN_MANAGE_STALL, unauthorized } from '@/lib/auth/guard';
+import { getCurrentUser, requireRoles, checkCanteenAccess, checkStallAccess, CAN_ENTER_REVENUE, unauthorized } from '@/lib/auth/guard';
 import type { ApiResponse } from '@/lib/auth/types';
 
 /**
@@ -14,7 +14,7 @@ export async function PUT(
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
 
-  const roleCheck = requireRoles(user, CAN_MANAGE_STALL);
+  const roleCheck = requireRoles(user, CAN_ENTER_REVENUE);
   if (!roleCheck.ok) return roleCheck.response;
 
   const { id } = await params;
@@ -40,6 +40,11 @@ export async function PUT(
   }
 
   const existingRec = existing as Record<string, unknown>;
+
+  // 档口负责人只能编辑自己档口的记录
+  if (roleCheck.user.role_code === 'STALL_MANAGER' && existingRec.stall_id !== roleCheck.user.org_id) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '只能编辑自己档口的记录' }, { status: 403 });
+  }
 
   // 权限校验
   const cId = (canteen_id as string) || (existingRec.canteen_id as string);
@@ -81,7 +86,7 @@ export async function DELETE(
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
 
-  const roleCheck = requireRoles(user, CAN_MANAGE_STALL);
+  const roleCheck = requireRoles(user, CAN_ENTER_REVENUE);
   if (!roleCheck.ok) return roleCheck.response;
 
   const { id } = await params;
@@ -97,6 +102,11 @@ export async function DELETE(
   if (!existing) return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
 
   const existingRec = existing as Record<string, unknown>;
+
+  // 档口负责人只能删除自己档口的记录
+  if (roleCheck.user.role_code === 'STALL_MANAGER' && existingRec.stall_id !== roleCheck.user.org_id) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '只能删除自己档口的记录' }, { status: 403 });
+  }
 
   // 权限校验
   const canteenAccess = await checkCanteenAccess(roleCheck.user, existingRec.canteen_id as string);

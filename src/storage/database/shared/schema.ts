@@ -240,6 +240,9 @@ export const expense_records = pgTable(
 		note: text("note"), // 备注
 		is_auto_generated: boolean("is_auto_generated").default(false).notNull(), // 是否由固定支出自动生成
 		fixed_expense_id: varchar("fixed_expense_id", { length: 36 }), // 关联固定支出ID
+		stall_id: varchar("stall_id", { length: 36 }), // 关联档口（可选）
+		is_daily_repeat: boolean("is_daily_repeat").default(false).notNull(), // 是否当月每天重复
+		repeat_group_id: varchar("repeat_group_id", { length: 36 }), // 重复组ID，同组数据同步修改
 		product_category_id: varchar("product_category_id", { length: 36 }), // 食材品类（仅食材采购）
 		product_id: varchar("product_id", { length: 36 }), // 食材名称（仅食材采购）
 		quantity: numeric("quantity", { precision: 12, scale: 2 }), // 数量（仅食材采购）
@@ -255,6 +258,8 @@ export const expense_records = pgTable(
 		index("expense_records_expense_date_idx").on(table.expense_date),
 		index("expense_records_category_idx").on(table.category),
 		index("expense_records_created_by_idx").on(table.created_by),
+		index("expense_records_stall_id_idx").on(table.stall_id),
+		index("expense_records_repeat_group_id_idx").on(table.repeat_group_id),
 	]
 );
 

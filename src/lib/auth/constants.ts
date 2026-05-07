@@ -61,7 +61,7 @@ export const CAN_MANAGE_CANTEEN: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, R
 /**
  * 允许管理档口的角色（创建档口、指定档口负责人）
  */
-export const CAN_MANAGE_STALL: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.CANTEEN_MANAGER];
+export const CAN_MANAGE_STALL: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER];
 
 /**
  * 允许管理餐别/营收类型的角色（与食堂管理权限一致，都属于食堂级配置）
@@ -77,6 +77,11 @@ export const CAN_ENTER_REVENUE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, Ro
  * 允许录入支出数据的角色（档口负责人无支出录入权限）
  */
 export const CAN_ENTER_EXPENSE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER];
+
+/**
+ * 允许管理支出数据的角色（含档口负责人，可录入/编辑/删除支出）
+ */
+export const CAN_MANAGE_EXPENSE: RoleCodeValue[] = [RoleCode.SYSTEM_DEVELOPER, RoleCode.COMPANY_MANAGER, RoleCode.CANTEEN_MANAGER, RoleCode.STALL_MANAGER];
 
 /**
  * 允许管理营收类型的角色

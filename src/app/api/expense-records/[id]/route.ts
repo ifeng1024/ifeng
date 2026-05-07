@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { getCurrentUser, requireRoles, checkCanteenAccess, CAN_ENTER_EXPENSE, unauthorized } from '@/lib/auth/guard';
+import { getCurrentUser, requireRoles, checkCanteenAccess, CAN_MANAGE_EXPENSE, unauthorized } from '@/lib/auth/guard';
 import type { ApiResponse } from '@/lib/auth/types';
 
 /**
  * PUT /api/expense-records/[id]
  * 编辑支出记录
+ * 如果记录属于 repeat_group，同步更新同组所有记录
  */
 export async function PUT(
   request: NextRequest,
@@ -14,13 +15,13 @@ export async function PUT(
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
 
-  const roleCheck = requireRoles(user, CAN_ENTER_EXPENSE);
+  const roleCheck = requireRoles(user, CAN_MANAGE_EXPENSE);
   if (!roleCheck.ok) return roleCheck.response;
 
   const { id } = await params;
   const body = (await request.json()) as Record<string, unknown>;
   const {
-    canteen_id, expense_date, category, amount, note,
+    canteen_id, expense_date, category, amount, note, stall_id,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
   } = body;
 
@@ -33,38 +34,47 @@ export async function PUT(
     .eq('is_active', true)
     .single();
 
-  if (!existing) return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
+  if (!existing) {
+    return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
+  }
 
   const existingRec = existing as Record<string, unknown>;
 
+  // 权限校验
   const cId = (canteen_id as string) || (existingRec.canteen_id as string);
-  const access = await checkCanteenAccess(roleCheck.user, cId);
-  if (!access.ok) return access.response;
+  const canteenAccess = await checkCanteenAccess(roleCheck.user, cId);
+  if (!canteenAccess.ok) return canteenAccess.response;
 
   const updateData: Record<string, unknown> = {
-    ...(canteen_id !== undefined && { canteen_id: canteen_id as string }),
-    ...(expense_date !== undefined && { expense_date: expense_date as string }),
-    ...(category !== undefined && { category: category as string }),
-    ...(amount !== undefined && { amount: String(amount) }),
-    ...(note !== undefined && { note: (note as string) || null }),
     updated_at: new Date().toISOString(),
   };
+  if (category !== undefined) updateData.category = category as string;
+  if (amount !== undefined) updateData.amount = String(amount);
+  if (note !== undefined) updateData.note = (note as string) || null;
+  if (stall_id !== undefined) updateData.stall_id = (stall_id as string) || null;
 
-  const effectiveCategory = (category as string) || (existingRec.category as string);
-  if (effectiveCategory === '食材采购') {
-    updateData.product_category_id = (product_category_id as string) || null;
-    updateData.product_id = (product_id as string) || null;
-    updateData.quantity = quantity !== undefined ? String(quantity) : null;
-    updateData.unit_price = unit_price !== undefined ? String(unit_price) : null;
-    updateData.product_spec_id = (product_spec_id as string) || null;
-  } else {
-    updateData.product_category_id = null;
-    updateData.product_id = null;
-    updateData.quantity = null;
-    updateData.unit_price = null;
-    updateData.product_spec_id = null;
+  if ((category as string) === '食材采购' || (existingRec.category as string) === '食材采购') {
+    if (product_category_id !== undefined) updateData.product_category_id = product_category_id as string;
+    if (product_id !== undefined) updateData.product_id = product_id as string;
+    if (quantity !== undefined) updateData.quantity = String(quantity);
+    if (unit_price !== undefined) updateData.unit_price = String(unit_price);
+    if (product_spec_id !== undefined) updateData.product_spec_id = product_spec_id as string;
   }
 
+  // If this record has a repeat_group_id, update all records in the same group
+  const repeatGroupId = existingRec.repeat_group_id as string | null;
+  if (repeatGroupId && (amount !== undefined || category !== undefined || note !== undefined || stall_id !== undefined)) {
+    const { error } = await supabase
+      .from('expense_records')
+      .update(updateData)
+      .eq('repeat_group_id', repeatGroupId)
+      .eq('is_active', true);
+
+    if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
+    return NextResponse.json<ApiResponse>({ success: true, data: { id, synced: true } });
+  }
+
+  // Normal update for non-repeating records
   const { data, error } = await supabase
     .from('expense_records')
     .update(updateData)
@@ -87,7 +97,7 @@ export async function DELETE(
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
 
-  const roleCheck = requireRoles(user, CAN_ENTER_EXPENSE);
+  const roleCheck = requireRoles(user, CAN_MANAGE_EXPENSE);
   if (!roleCheck.ok) return roleCheck.response;
 
   const { id } = await params;
@@ -103,8 +113,10 @@ export async function DELETE(
   if (!existing) return NextResponse.json<ApiResponse>({ success: false, error: '记录不存在' }, { status: 404 });
 
   const existingRec = existing as Record<string, unknown>;
-  const access = await checkCanteenAccess(roleCheck.user, existingRec.canteen_id as string);
-  if (!access.ok) return access.response;
+
+  // 权限校验
+  const canteenAccess = await checkCanteenAccess(roleCheck.user, existingRec.canteen_id as string);
+  if (!canteenAccess.ok) return canteenAccess.response;
 
   const { error } = await supabase
     .from('expense_records')
@@ -112,5 +124,5 @@ export async function DELETE(
     .eq('id', id);
 
   if (error) return NextResponse.json<ApiResponse>({ success: false, error: error.message }, { status: 500 });
-  return NextResponse.json<ApiResponse>({ success: true });
+  return NextResponse.json<ApiResponse>({ success: true, data: null });
 }

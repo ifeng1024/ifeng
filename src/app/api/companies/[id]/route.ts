@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { getCurrentUser, requireRoles, CAN_CREATE_COMPANY, unauthorized } from '@/lib/auth/guard';
+import { RoleCode } from '@/lib/auth/constants';
 import type { ApiResponse } from '@/lib/auth/types';
 
 /**
@@ -14,10 +15,17 @@ export async function PUT(
   const user = getCurrentUser(request);
   if (!user) return unauthorized();
 
-  const roleCheck = requireRoles(user, CAN_CREATE_COMPANY);
-  if (!roleCheck.ok) return roleCheck.response;
-
   const { id } = await params;
+
+  // SYSTEM_DEVELOPER can update any company; COMPANY_MANAGER can only update own company
+  if (user.role_code === RoleCode.COMPANY_MANAGER) {
+    if (user.org_id !== id) {
+      return NextResponse.json<ApiResponse>({ success: false, error: '只能修改自己公司的信息' }, { status: 403 });
+    }
+  } else {
+    const roleCheck = requireRoles(user, CAN_CREATE_COMPANY);
+    if (!roleCheck.ok) return roleCheck.response;
+  }
   const body = (await request.json()) as Record<string, unknown>;
 
   const updateData: Record<string, unknown> = {};

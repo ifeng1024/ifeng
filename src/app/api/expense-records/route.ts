@@ -22,9 +22,62 @@ export async function GET(request: NextRequest) {
   const page = parseInt(searchParams.get('page') || '1');
   const pageSize = parseInt(searchParams.get('page_size') || '50');
 
+  // Auto-generate daily repeat records for today
+  const todayStr = new Date().toLocaleDateString('sv-SE');
+  const { data: repeatGroups } = await supabase
+    .from('expense_records')
+    .select('repeat_group_id, canteen_id, stall_id, category, amount, note, is_auto_generated, fixed_expense_id, product_category_id, product_id, quantity, unit_price, product_spec_id, created_by')
+    .eq('is_daily_repeat', true)
+    .eq('is_active', true)
+    .not('repeat_group_id', 'is', null);
+  if (repeatGroups && repeatGroups.length > 0) {
+    // Get unique group IDs
+    const groupMap = new Map<string, Record<string, unknown>>();
+    for (const r of repeatGroups) {
+      const gid = r.repeat_group_id as string;
+      if (!groupMap.has(gid)) groupMap.set(gid, r);
+    }
+    // For each group, check if today's record exists
+    for (const [groupId, template] of groupMap) {
+      const { data: todayRecord } = await supabase
+        .from('expense_records')
+        .select('id')
+        .eq('repeat_group_id', groupId)
+        .eq('expense_date', todayStr)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!todayRecord) {
+        // Check if today is in the same month as the group's first record
+        const { data: firstRecord } = await supabase
+          .from('expense_records')
+          .select('expense_date')
+          .eq('repeat_group_id', groupId)
+          .eq('is_active', true)
+          .order('expense_date', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (firstRecord) {
+          const firstDate = firstRecord.expense_date as string;
+          const [fy, fm] = firstDate.split('-').map(Number);
+          const [ty, tm] = todayStr.split('-').map(Number);
+          if (fy === ty && fm === tm) {
+            // Same month: generate today's record
+            const newRecord: Record<string, unknown> = {
+              ...template,
+              expense_date: todayStr,
+              repeat_group_id: groupId,
+            };
+            delete newRecord.id;
+            await supabase.from('expense_records').insert([newRecord]);
+          }
+        }
+      }
+    }
+  }
+
   let query = supabase
     .from('expense_records')
-    .select('id, canteen_id, stall_id, expense_date, category, amount, note, is_auto_generated, fixed_expense_id, is_daily_repeat, repeat_group_id, product_category_id, product_id, quantity, unit_price, product_spec_id, is_active, created_by, created_at, updated_at, canteens(name), stalls(name)', { count: isExport ? undefined : 'exact' })
+    .select('id, canteen_id, stall_id, expense_date, category, amount, note, is_auto_generated, fixed_expense_id, is_daily_repeat, repeat_group_id, product_category_id, product_id, quantity, unit_price, product_spec_id, supplier_id, is_active, created_by, created_at, updated_at, canteens(name), stalls(name)', { count: isExport ? undefined : 'exact' })
     .eq('is_active', true)
     .order('expense_date', { ascending: false })
     .order('created_at', { ascending: false });
@@ -167,27 +220,49 @@ export async function POST(request: NextRequest) {
   if ((category as string) === '食材采购') {
     if (product_category_id) insertData.product_category_id = product_category_id as string;
     if (product_id) insertData.product_id = product_id as string;
-    if (quantity !== undefined) insertData.quantity = String(quantity);
-    if (unit_price !== undefined) insertData.unit_price = String(unit_price);
+    if (quantity != null && quantity !== '') insertData.quantity = String(quantity);
+    if (unit_price != null && unit_price !== '') insertData.unit_price = String(unit_price);
     if (product_spec_id) insertData.product_spec_id = product_spec_id as string;
   }
 
-  // Handle daily repeat: generate records for all days in the month
+  // Handle daily repeat: only insert for today (and fill past days up to today)
+  // Future days will be auto-generated when the GET API is called after midnight
   if (is_daily_repeat === true) {
     const groupId = crypto.randomUUID();
     insertData.repeat_group_id = groupId;
 
     const dateStr = expense_date as string;
     const [year, month] = dateStr.split('-').map(Number);
-    const daysInMonth = new Date(year, month, 0).getDate();
+    const today = new Date();
+    const todayStr = today.toLocaleDateString('sv-SE'); // YYYY-MM-DD in local time
+    const todayDay = today.getDate();
+    const todayMonth = today.getMonth() + 1;
+    const todayYear = today.getFullYear();
 
+    // Only generate records up to today's date in the same month
+    // If the expense_date is a future month, just insert one record
     const records: Record<string, unknown>[] = [];
-    for (let day = 1; day <= daysInMonth; day++) {
-      const d = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      records.push({
-        ...insertData,
-        expense_date: d,
-      });
+    if (year === todayYear && month === todayMonth) {
+      // Same month: generate from the start day up to today
+      const startDay = parseInt(dateStr.split('-')[2], 10);
+      for (let day = startDay; day <= todayDay; day++) {
+        const d = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        records.push({ ...insertData, expense_date: d });
+      }
+    } else if (year < todayYear || (year === todayYear && month < todayMonth)) {
+      // Past month: generate all days in that month
+      const daysInMonth = new Date(year, month, 0).getDate();
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        records.push({ ...insertData, expense_date: d });
+      }
+    } else {
+      // Future month: just insert one record for the specified date
+      records.push({ ...insertData });
+    }
+
+    if (records.length === 0) {
+      records.push({ ...insertData });
     }
 
     const { data, error } = await supabase

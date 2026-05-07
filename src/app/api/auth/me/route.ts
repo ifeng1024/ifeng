@@ -42,18 +42,20 @@ export async function GET(request: NextRequest) {
       company_name = company?.name || null;
       org_name = company_name;
     } else if (dbUser.role_code === RoleCode.CANTEEN_MANAGER && dbUser.org_id) {
-      const { data: canteen } = await client.from('canteens').select('name, company_id, companies(name)').eq('id', dbUser.org_id).single();
+      const { data: canteen } = await client.from('canteens').select('name, company_id').eq('id', dbUser.org_id).single();
       org_name = canteen?.name || null;
-      if (canteen) {
-        company_name = ((canteen as Record<string, unknown>).companies as unknown as { name: string }[] | null)?.[0]?.name || null;
+      if (canteen?.company_id) {
+        const { data: company } = await client.from('companies').select('name').eq('id', canteen.company_id).single();
+        company_name = company?.name || null;
       }
     } else if (dbUser.role_code === RoleCode.STALL_MANAGER && dbUser.org_id) {
-      const { data: stall } = await client.from('stalls').select('name, canteen_id, canteens(name, company_id, companies(name))').eq('id', dbUser.org_id).single();
+      const { data: stall } = await client.from('stalls').select('name, canteen_id').eq('id', dbUser.org_id).single();
       org_name = stall?.name || null;
-      if (stall) {
-        const canteen = (stall as Record<string, unknown>).canteens as unknown as { name: string; company_id: string; companies: { name: string }[] } | null;
-        if (canteen) {
-          company_name = canteen.companies?.[0]?.name || null;
+      if (stall?.canteen_id) {
+        const { data: canteen } = await client.from('canteens').select('name, company_id').eq('id', stall.canteen_id).single();
+        if (canteen?.company_id) {
+          const { data: company } = await client.from('companies').select('name').eq('id', canteen.company_id).single();
+          company_name = company?.name || null;
         }
       }
     }

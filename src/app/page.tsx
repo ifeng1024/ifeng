@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
+import * as XLSX from 'xlsx';
 
 /* ─── TYPES & CONSTANTS ─── */
 interface AuthUser { id: string; username: string; real_name: string; role_code: string; org_id: string | null; company_name: string | null; org_name: string | null; expires_at: string | null; is_disabled: boolean; }
@@ -58,15 +59,16 @@ function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void }) {
             ))}
           </div>
         </div>
+        <div className="mt-4 pt-3 border-t text-center">
+          <p className="text-xs text-gray-400">联系我们：微信ccyjcmd</p>
+        </div>
       </div>
     </div>
   );
 }
-
-/* ─── DEVELOPER VIEW ─── */
 function DeveloperView({ user, onSwitchAccount }: { user: AuthUser; onSwitchAccount: (u: AuthUser, token: string) => void }) {
   const [users, setUsers] = useState<Record<string, unknown>[]>([]);
-  const [showForm, setShowForm] = useState(false);
+  const [showForm, setShowForm] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ company_name: '', username: '', real_name: '', password: '', expires_at: '' });
 
@@ -341,7 +343,7 @@ function RevenuePage({ user }: { user: AuthUser }) {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
+  const [showForm, setShowForm] = useState(true);
   const [form, setForm] = useState({ canteen_id: '', stall_id: '', meal_type_id: '', record_date: new Date().toLocaleDateString('sv-SE'), order_count: '', amount: '', note: '' });
 
   useEffect(() => {
@@ -366,6 +368,14 @@ function RevenuePage({ user }: { user: AuthUser }) {
     });
   }, [form.canteen_id, isStallMgr]);
 
+  const exportRevenueExcel = async () => {
+    const res = await apiFetch<ApiResp>('/api/revenue-records?page=1&page_size=9999');
+    if (!res.success || !res.data) return;
+    const allRecs = ((res.data as Record<string, unknown>).records || []) as Record<string, unknown>[];
+    const XLSX = await import('xlsx');
+    const data = allRecs.map((r: Record<string, unknown>) => ({ 日期: r.record_date, 食堂: r.canteen_name, 档口: r.stall_name, 餐别: r.meal_type_name, 金额: num(r.amount), 单量: num(r.order_count), 备注: r.note || '' }));
+    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, '营收'); XLSX.writeFile(wb, '营收记录.xlsx');
+  };
   const loadRecords = useCallback(async () => {
     const res = await apiFetch<ApiResp>(`/api/revenue-records?page=${page}&page_size=10`);
     if (res.success && res.data) { const d = res.data as Record<string, unknown>; setRecords((d.records || []) as Record<string, unknown>[]); setTotal(num(d.total)); }
@@ -404,10 +414,9 @@ function RevenuePage({ user }: { user: AuthUser }) {
       <div className="bg-white rounded-xl shadow p-5">
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-semibold text-gray-700">营收录入</h3>
-          <button onClick={() => { setShowForm(!showForm); setEditingId(null); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm && !editingId ? '取消' : '录入'}</button>
+          <button onClick={() => exportRevenueExcel()} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm">导出Excel</button>
         </div>
-        {showForm && (
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
             <div><label className="block text-xs font-medium text-gray-600 mb-1">食堂 *</label><select value={form.canteen_id} onChange={e => setForm(f => ({ ...f, canteen_id: e.target.value, stall_id: '', meal_type_id: '' }))} disabled={isStallMgr && canteens.length === 1} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择食堂</option>{canteens.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">档口 *</label><select value={form.stall_id} onChange={e => setForm(f => ({ ...f, stall_id: e.target.value }))} disabled={isStallMgr && stalls.length === 1} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择档口</option>{stalls.map(s => <option key={s.id as string} value={s.id as string}>{s.name as string}</option>)}</select></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">餐别 *</label><select value={form.meal_type_id} onChange={e => setForm(f => ({ ...f, meal_type_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择餐别</option>{mealTypes.map(m => <option key={m.id as string} value={m.id as string}>{m.name as string}</option>)}</select></div>
@@ -415,9 +424,8 @@ function RevenuePage({ user }: { user: AuthUser }) {
             <div><label className="block text-xs font-medium text-gray-600 mb-1">订单数</label><input type="number" value={form.order_count} onChange={e => setForm(f => ({ ...f, order_count: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">金额 *</label><input type="number" step="0.01" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
             <div className="col-span-2 lg:col-span-3"><label className="block text-xs font-medium text-gray-600 mb-1">备注</label><input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
-            <div className="col-span-2 lg:col-span-3 flex gap-2"><button onClick={submit} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm">{editingId ? '保存' : '录入'}</button><button onClick={() => { setShowForm(false); setEditingId(null); }} className="bg-gray-200 text-gray-700 px-6 py-2 rounded-lg text-sm">取消</button></div>
+            <div className="col-span-2 lg:col-span-3 flex gap-2"><button onClick={submit} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm">{editingId ? '保存' : '录入'}</button>{editingId && <button onClick={() => setEditingId(null)} className="bg-gray-200 text-gray-700 px-6 py-2 rounded-lg text-sm">取消编辑</button>}</div>
           </div>
-        )}
       </div>
 
       <div className="bg-white rounded-xl shadow overflow-hidden">
@@ -461,6 +469,8 @@ function ExpensePage() {
   const [products, setProducts] = useState<Record<string, unknown>[]>([]);
   const [specs, setSpecs] = useState<Record<string, unknown>[]>([]);
   const [form, setForm] = useState({ canteen_id: '', stall_id: '', expense_date: new Date().toLocaleDateString('sv-SE'), category: '食材采购', amount: '', note: '', is_daily_repeat: false, product_category_id: '', product_id: '', product_spec_id: '', quantity: '', unit_price: '', supplier_id: '' });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Record<string, unknown>>({});
 
   useEffect(() => { apiFetch<ApiResp>('/api/dropdown/canteens').then(res => { if (res.success && res.data) setCanteens(res.data as Record<string, unknown>[]); }); }, []);
   useEffect(() => { apiFetch<ApiResp>('/api/suppliers').then(res => { if (res.success && res.data) setSuppliers(res.data as Record<string, unknown>[]); }); }, []);
@@ -502,6 +512,14 @@ function ExpensePage() {
     if (!confirm('确认删除？')) return;
     const res = await apiFetch<ApiResp>(`/api/expense-records/${id}`, { method: 'DELETE' });
     if (res.success) loadRecords(); else alert(res.error);
+  };
+
+  const startEdit = (r: Record<string, unknown>) => { setEditingId(String(r.id)); setEditForm({ amount: num(r.amount), note: String(r.note || ''), category: String(r.category || ''), stall_id: String(r.stall_id || '') }); };
+  const saveEdit = async () => {
+    if (!editingId) return;
+    const body: Record<string, unknown> = { amount: num(editForm.amount), note: (editForm as Record<string, unknown>).note || null, category: (editForm as Record<string, unknown>).category, stall_id: (editForm as Record<string, unknown>).stall_id || null };
+    const res = await apiFetch<ApiResp>(`/api/expense-records/${editingId}`, { method: 'PUT', body: JSON.stringify(body) });
+    if (res.success) { setEditingId(null); loadRecords(); } else alert(res.error);
   };
 
   const exportData = async () => {
@@ -557,7 +575,7 @@ function ExpensePage() {
                 <td className="px-3 py-2 text-gray-500">{[r.product_category_name, r.product_name, r.product_spec_name].filter(Boolean).join(' / ') || '-'}</td>
                 <td className="px-3 py-2 text-right">{fmt(r.amount)}</td>
                 <td className="px-3 py-2">{r.is_daily_repeat ? <span className="text-xs text-blue-500">每日</span> : ''}</td>
-                <td className="px-3 py-2 text-center"><button onClick={() => deleteRecord(r.id as string)} className="text-red-600 hover:underline text-xs">删除</button></td>
+                <td className="px-3 py-2 text-center"><button onClick={() => { setEditingId(r.id as string); setEditForm({ amount: r.amount, note: r.note || '', category: r.category, stall_id: r.stall_id || '' }); }} className="text-blue-600 hover:underline text-xs mr-2">编辑</button><button onClick={() => deleteRecord(r.id as string)} className="text-red-600 hover:underline text-xs">删除</button></td>
               </tr>
             ))}
           </tbody>
@@ -567,6 +585,22 @@ function ExpensePage() {
           <div className="flex gap-2"><button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 border rounded disabled:opacity-30">上一页</button><button onClick={() => setPage(p => p + 1)} disabled={records.length < 10} className="px-3 py-1 border rounded disabled:opacity-30">下一页</button></div>
         </div>
       </div>
+
+      {/* Edit Dialog */}
+      {editingId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md space-y-4">
+            <h3 className="text-lg font-bold">编辑支出</h3>
+            <div><label className="text-sm text-gray-600">金额</label><input type="number" value={String(editForm.amount ?? '')} onChange={e => setEditForm(f => ({...f, amount: Number(e.target.value)}))} className="w-full border rounded px-3 py-2 mt-1" /></div>
+            <div><label className="text-sm text-gray-600">类别</label><select value={String(editForm.category ?? '')} onChange={e => setEditForm(f => ({...f, category: e.target.value}))} className="w-full border rounded px-3 py-2 mt-1"><option>食材采购</option><option>人工</option><option>水电</option><option>房租</option><option>其他</option></select></div>
+            <div><label className="text-sm text-gray-600">备注</label><input value={String(editForm.note ?? '')} onChange={e => setEditForm(f => ({...f, note: e.target.value}))} className="w-full border rounded px-3 py-2 mt-1" /></div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingId(null)} className="px-4 py-2 border rounded">取消</button>
+              <button onClick={saveEdit} className="px-4 py-2 bg-blue-600 text-white rounded">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -948,7 +982,7 @@ function AccountManager({ user: currentUser }: { user: AuthUser }) {
       <div className="bg-white rounded-xl shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">用户名</th><th className="px-3 py-2 text-left">姓名</th><th className="px-3 py-2 text-left">角色</th><th className="px-3 py-2 text-left">状态</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
-          <tbody>{users.map(u => (<tr key={u.id as string} className="border-t hover:bg-gray-50"><td className="px-3 py-2">{u.username as string}</td><td className="px-3 py-2">{u.real_name as string || ''}</td><td className="px-3 py-2">{ROLE_LABEL[u.role_code as string] || '-'}</td><td className="px-3 py-2">{u.is_disabled ? <span className="text-red-500">已禁用</span> : <span className="text-green-600">正常</span>}</td><td className="px-3 py-2 text-center space-x-1"><button onClick={() => startEdit(u)} className="text-blue-600 hover:underline text-xs">编辑</button><button onClick={() => toggleDisable(u)} className="text-orange-600 hover:underline text-xs">{u.is_disabled ? '启用' : '禁用'}</button><button onClick={() => resetPw(u)} className="text-gray-600 hover:underline text-xs">重置密码</button></td></tr>))}</tbody>
+          <tbody>{users.map(u => (<tr key={u.id as string} className="border-t hover:bg-gray-50"><td className="px-3 py-2">{u.username as string}</td><td className="px-3 py-2">{u.real_name as string || ''}</td><td className="px-3 py-2">{ROLE_LABEL[u.role_code as string] || '-'}</td><td className="px-3 py-2">{u.is_disabled ? <span className="text-red-500">已禁用</span> : <span className="text-green-600">正常</span>}</td><td className="px-3 py-2 text-center space-x-1"><button onClick={() => startEdit(u)} className="text-blue-600 hover:underline text-xs">编辑</button><button onClick={() => toggleDisable(u)} className="text-orange-600 hover:underline text-xs">{u.is_disabled ? '启用' : '禁用'}</button><button onClick={() => resetPw(u)} className="text-gray-600 hover:underline text-xs">重置密码</button><button onClick={async () => { if (!confirm('确认删除此账号？删除后不可恢复！')) return; const res = await apiFetch<ApiResp>(`/api/users/${u.id}`, { method: 'DELETE' }); if (res.success) load(); else alert(res.error); }} className="text-red-600 hover:underline text-xs">删除</button></td></tr>))}</tbody>
         </table>
       </div>
     </div>
@@ -1277,7 +1311,7 @@ export default function Home() {
     return (
       <div className="min-h-screen bg-gray-50 flex">
         <aside className="hidden md:flex w-56 bg-white border-r flex-col">
-          <div className="p-4 border-b"><h2 className="font-bold text-gray-800">食堂管理系统</h2><p className="text-xs text-gray-400 mt-1">{user.real_name || user.username} · {ROLE_LABEL[user.role_code]}</p></div>
+          <div className="p-4 border-b"><h2 className="font-bold text-gray-800">食堂管理系统</h2><p className="text-xs text-gray-400 mt-1">{user.real_name || user.username} · {ROLE_LABEL[user.role_code]}</p>{user.role_code!=='SYSTEM_DEVELOPER'&&<p className="text-xs text-gray-500 mt-0.5">{[user.company_name,user.org_name].filter(Boolean).join(' / ')}</p>}</div>
           <nav className="flex-1 p-2 space-y-1">
             <button className="w-full text-left px-4 py-2 rounded-lg text-sm bg-blue-600 text-white">基础设置</button>
           </nav>
@@ -1297,7 +1331,7 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50 flex">
       {/* Sidebar - desktop */}
       <aside className="hidden md:flex w-56 bg-white border-r flex-col">
-        <div className="p-4 border-b"><h2 className="font-bold text-gray-800">食堂管理系统</h2><p className="text-xs text-gray-400 mt-1">{user.real_name || user.username} · {ROLE_LABEL[user.role_code]}</p></div>
+        <div className="p-4 border-b"><h2 className="font-bold text-gray-800">食堂管理系统</h2><p className="text-xs text-gray-400 mt-1">{user.real_name || user.username} · {ROLE_LABEL[user.role_code]}</p>{user.role_code!=='SYSTEM_DEVELOPER'&&<p className="text-xs text-gray-500 mt-0.5">{[user.company_name,user.org_name].filter(Boolean).join(' / ')}</p>}</div>
         <nav className="flex-1 p-2 space-y-1">
           {visibleTabs.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)} className={`w-full text-left px-4 py-2 rounded-lg text-sm transition ${tab === t.key ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}>{t.label}</button>

@@ -22,54 +22,57 @@ export async function GET(request: NextRequest) {
   const page = parseInt(searchParams.get('page') || '1');
   const pageSize = parseInt(searchParams.get('page_size') || '50');
 
-  // Auto-generate daily repeat records for today
+  // Auto-generate missing daily repeat records for today
+  // Find all repeat groups where today is within their date range but no record exists
   const todayStr = new Date().toLocaleDateString('sv-SE');
   const { data: repeatGroups } = await supabase
     .from('expense_records')
-    .select('repeat_group_id, canteen_id, stall_id, category, amount, note, is_auto_generated, fixed_expense_id, product_category_id, product_id, quantity, unit_price, product_spec_id, created_by')
-    .eq('is_daily_repeat', true)
+    .select('repeat_group_id, canteen_id, stall_id, category, amount, note, is_auto_generated, fixed_expense_id, product_category_id, product_id, quantity, unit_price, product_spec_id, created_by, supplier_id, repeat_start_date, repeat_end_date')
+    .not('repeat_group_id', 'is', null)
     .eq('is_active', true)
-    .not('repeat_group_id', 'is', null);
+    .not('repeat_start_date', 'is', null)
+    .not('repeat_end_date', 'is', null);
   if (repeatGroups && repeatGroups.length > 0) {
-    // Get unique group IDs
     const groupMap = new Map<string, Record<string, unknown>>();
     for (const r of repeatGroups) {
       const gid = r.repeat_group_id as string;
       if (!groupMap.has(gid)) groupMap.set(gid, r);
     }
-    // For each group, check if today's record exists
     for (const [groupId, template] of groupMap) {
-      const { data: todayRecord } = await supabase
-        .from('expense_records')
-        .select('id')
-        .eq('repeat_group_id', groupId)
-        .eq('expense_date', todayStr)
-        .eq('is_active', true)
-        .maybeSingle();
-      if (!todayRecord) {
-        // Check if today is in the same month as the group's first record
-        const { data: firstRecord } = await supabase
+      const repeatStart = template.repeat_start_date as string;
+      const repeatEnd = template.repeat_end_date as string;
+      // Only generate if today is within the repeat date range
+      if (todayStr >= repeatStart && todayStr <= repeatEnd) {
+        const { data: todayRecord } = await supabase
           .from('expense_records')
-          .select('expense_date')
+          .select('id')
           .eq('repeat_group_id', groupId)
+          .eq('expense_date', todayStr)
           .eq('is_active', true)
-          .order('expense_date', { ascending: true })
-          .limit(1)
           .maybeSingle();
-        if (firstRecord) {
-          const firstDate = firstRecord.expense_date as string;
-          const [fy, fm] = firstDate.split('-').map(Number);
-          const [ty, tm] = todayStr.split('-').map(Number);
-          if (fy === ty && fm === tm) {
-            // Same month: generate today's record
-            const newRecord: Record<string, unknown> = {
-              ...template,
-              expense_date: todayStr,
-              repeat_group_id: groupId,
-            };
-            delete newRecord.id;
-            await supabase.from('expense_records').insert([newRecord]);
-          }
+        if (!todayRecord) {
+          const newRecord: Record<string, unknown> = {
+            canteen_id: template.canteen_id,
+            stall_id: template.stall_id,
+            category: template.category,
+            amount: template.amount,
+            note: template.note,
+            is_auto_generated: true,
+            fixed_expense_id: template.fixed_expense_id,
+            product_category_id: template.product_category_id,
+            product_id: template.product_id,
+            quantity: template.quantity,
+            unit_price: template.unit_price,
+            product_spec_id: template.product_spec_id,
+            created_by: template.created_by,
+            supplier_id: template.supplier_id,
+            repeat_group_id: groupId,
+            repeat_start_date: repeatStart,
+            repeat_end_date: repeatEnd,
+            expense_date: todayStr,
+            is_daily_repeat: true,
+          };
+          await supabase.from('expense_records').insert([newRecord]);
         }
       }
     }
@@ -77,7 +80,7 @@ export async function GET(request: NextRequest) {
 
   let query = supabase
     .from('expense_records')
-    .select('id, canteen_id, stall_id, expense_date, category, amount, note, is_auto_generated, fixed_expense_id, is_daily_repeat, repeat_group_id, product_category_id, product_id, quantity, unit_price, product_spec_id, supplier_id, is_active, created_by, created_at, updated_at, canteens(name), stalls(name)', { count: isExport ? undefined : 'exact' })
+    .select('id, canteen_id, stall_id, expense_date, category, amount, note, is_auto_generated, fixed_expense_id, is_daily_repeat, repeat_group_id, repeat_start_date, repeat_end_date, product_category_id, product_id, quantity, unit_price, product_spec_id, supplier_id, is_active, created_by, created_at, updated_at, canteens(name), stalls(name)', { count: isExport ? undefined : 'exact' })
     .eq('is_active', true)
     .order('expense_date', { ascending: false })
     .order('created_at', { ascending: false });
@@ -158,10 +161,13 @@ export async function GET(request: NextRequest) {
 
   // Export as CSV
   if (isExport) {
-    const header = '日期,食堂,档口,类别,金额,备注,是否每天重复';
-    const rows = formatted.map(r =>
-      `${r.expense_date},${r.canteen_name || ''},${r.stall_name || ''},${r.category || ''},${r.amount},${(r.note || '').toString().replace(/,/g, '，')},${r.is_daily_repeat ? '是' : '否'}`
-    );
+    const header = '日期,食堂,档口,类别,金额,备注,重复时间';
+    const rows = formatted.map(r => {
+      const repeatRange = r.repeat_start_date && r.repeat_end_date
+        ? `${r.repeat_start_date}~${r.repeat_end_date}`
+        : (r.is_daily_repeat ? '是' : '否');
+      return `${r.expense_date},${r.canteen_name || ''},${r.stall_name || ''},${r.category || ''},${r.amount},${(r.note || '').toString().replace(/,/g, '，')},${repeatRange}`;
+    });
     const csv = '\uFEFF' + header + '\n' + rows.join('\n');
     return new NextResponse(csv, {
       headers: {
@@ -178,7 +184,8 @@ export async function GET(request: NextRequest) {
  * POST /api/expense-records
  * 创建支出记录
  * 字段：canteen_id, expense_date, category, amount, note, stall_id(可选),
- *       is_daily_repeat(可选), product_category_id, product_id, quantity, unit_price, product_spec_id (仅食材采购)
+ *       repeat_start_date/repeat_end_date(可选, 重复日期范围),
+ *       product_category_id, product_id, quantity, unit_price, product_spec_id (仅食材采购)
  */
 export async function POST(request: NextRequest) {
   const user = getCurrentUser(request);
@@ -190,7 +197,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as Record<string, unknown>;
   const {
     canteen_id, expense_date, category, amount, note,
-    stall_id, is_daily_repeat, supplier_id,
+    stall_id, repeat_start_date, repeat_end_date, supplier_id,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
   } = body;
 
@@ -212,7 +219,6 @@ export async function POST(request: NextRequest) {
     note: (note as string) || null,
     stall_id: (stall_id as string) || null,
     supplier_id: (supplier_id as string) || null,
-    is_daily_repeat: is_daily_repeat === true,
     created_by: roleCheck.user.user_id,
   };
 
@@ -225,43 +231,45 @@ export async function POST(request: NextRequest) {
     if (product_spec_id) insertData.product_spec_id = product_spec_id as string;
   }
 
-  // Handle daily repeat: only insert for today (and fill past days up to today)
-  // Future days will be auto-generated when the GET API is called after midnight
-  if (is_daily_repeat === true) {
+  // Handle repeat date range: generate records for past days immediately, future days auto-generated
+  if (repeat_start_date && repeat_end_date) {
+    const startDateStr = repeat_start_date as string;
+    const endDateStr = repeat_end_date as string;
+
+    if (endDateStr < startDateStr) {
+      return NextResponse.json<ApiResponse>({ success: false, error: '结束日期不能早于开始日期' }, { status: 400 });
+    }
+
     const groupId = crypto.randomUUID();
     insertData.repeat_group_id = groupId;
+    insertData.repeat_start_date = startDateStr;
+    insertData.repeat_end_date = endDateStr;
+    insertData.is_daily_repeat = true;
 
-    const dateStr = expense_date as string;
-    const [year, month] = dateStr.split('-').map(Number);
     const today = new Date();
-    const todayStr = today.toLocaleDateString('sv-SE'); // YYYY-MM-DD in local time
-    const todayDay = today.getDate();
-    const todayMonth = today.getMonth() + 1;
-    const todayYear = today.getFullYear();
+    const todayStr = today.toLocaleDateString('sv-SE');
 
-    // Only generate records up to today's date in the same month
-    // If the expense_date is a future month, just insert one record
+    // Generate records from start_date up to today (past/current days)
+    // Future days (tomorrow onwards) will be auto-generated by GET API
     const records: Record<string, unknown>[] = [];
-    if (year === todayYear && month === todayMonth) {
-      // Same month: generate from the start day up to today
-      const startDay = parseInt(dateStr.split('-')[2], 10);
-      for (let day = startDay; day <= todayDay; day++) {
-        const d = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        records.push({ ...insertData, expense_date: d });
-      }
-    } else if (year < todayYear || (year === todayYear && month < todayMonth)) {
-      // Past month: generate all days in that month
-      const daysInMonth = new Date(year, month, 0).getDate();
-      for (let day = 1; day <= daysInMonth; day++) {
-        const d = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        records.push({ ...insertData, expense_date: d });
-      }
-    } else {
-      // Future month: just insert one record for the specified date
-      records.push({ ...insertData });
+    const actualEnd = endDateStr < todayStr ? endDateStr : todayStr;
+
+    // Parse dates for iteration
+    const [sy, sm, sd] = startDateStr.split('-').map(Number);
+    const startDt = new Date(sy, sm - 1, sd);
+    const [ey, em, ed] = actualEnd.split('-').map(Number);
+    const endDt = new Date(ey, em - 1, ed);
+
+    for (let d = new Date(startDt); d <= endDt; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toLocaleDateString('sv-SE');
+      records.push({
+        ...insertData,
+        expense_date: dateStr,
+      });
     }
 
     if (records.length === 0) {
+      // If start_date is in the future, just insert one record for start_date
       records.push({ ...insertData });
     }
 
@@ -274,6 +282,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<ApiResponse>({ success: true, data: data?.[0] || null }, { status: 201 });
   }
 
+  // Non-repeat: single record
   const { data, error } = await supabase
     .from('expense_records')
     .insert(insertData)

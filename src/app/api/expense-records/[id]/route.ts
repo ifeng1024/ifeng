@@ -23,6 +23,7 @@ export async function PUT(
   const {
     canteen_id, category, amount, note, stall_id, supplier_id,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
+    repeat_start_date, repeat_end_date,
   } = body;
 
   const supabase = getSupabaseClient();
@@ -53,6 +54,8 @@ export async function PUT(
   if (note !== undefined) updateData.note = (note as string) || null;
   if (stall_id !== undefined) updateData.stall_id = (stall_id as string) || null;
   if (supplier_id !== undefined) updateData.supplier_id = (supplier_id as string) || null;
+  if (repeat_start_date !== undefined) updateData.repeat_start_date = repeat_start_date as string || null;
+  if (repeat_end_date !== undefined) updateData.repeat_end_date = repeat_end_date as string || null;
 
   if ((category as string) === '食材采购' || (existingRec.category as string) === '食材采购') {
     if (product_category_id !== undefined) updateData.product_category_id = product_category_id as string;
@@ -64,7 +67,7 @@ export async function PUT(
 
   // If this record has a repeat_group_id, update all records in the same group
   const repeatGroupId = existingRec.repeat_group_id as string | null;
-  if (repeatGroupId && (amount !== undefined || category !== undefined || note !== undefined || stall_id !== undefined)) {
+  if (repeatGroupId && (amount !== undefined || category !== undefined || note !== undefined || stall_id !== undefined || supplier_id !== undefined || repeat_start_date !== undefined || repeat_end_date !== undefined)) {
     const { error } = await supabase
       .from('expense_records')
       .update(updateData)

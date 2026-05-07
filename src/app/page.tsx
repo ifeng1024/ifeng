@@ -238,7 +238,7 @@ function DashboardPage() {
   if (!data) return <div className="text-center py-10 text-red-400">加载失败</div>;
 
   const kpi = (data.kpi || {}) as Record<string, unknown>;
-  const canteenComparison = (data.canteen_comparison || []) as Record<string, unknown>[];
+  const perCanteenKpi = (data.per_canteen_kpi || []) as Record<string, unknown>[];
   const stallRanking = (data.stall_ranking || []) as Record<string, unknown>[];
   const revenueTrend = (data.revenue_trend || []) as Record<string, unknown>[];
   const expenseBreakdown = (data.expense_breakdown || []) as Record<string, unknown>[];
@@ -255,10 +255,10 @@ function DashboardPage() {
 
       {/* KPI Cards - Row 1: Today */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard label="今日营收" value={num(kpi.total_revenue).toFixed(2)} color="blue" />
-        <KpiCard label="今日支出" value={num(kpi.total_expense).toFixed(2)} color="red" />
-        <KpiCard label="今日毛利" value={num(kpi.gross_profit).toFixed(2)} color="green" />
-        <KpiCard label="今日毛利率" value={`${num(kpi.gross_margin).toFixed(1)}%`} color="purple" />
+        <KpiCard label="今日营收" value={num(kpi.today_revenue).toFixed(2)} color="blue" />
+        <KpiCard label="今日支出" value={num(kpi.today_expense).toFixed(2)} color="red" />
+        <KpiCard label="今日毛利" value={(num(kpi.today_revenue) - num(kpi.today_expense)).toFixed(2)} color="green" />
+        <KpiCard label="今日毛利率" value={`${num(kpi.today_revenue) > 0 ? ((num(kpi.today_revenue) - num(kpi.today_expense)) / num(kpi.today_revenue) * 100).toFixed(1) : '0.0'}%`} color="purple" />
       </div>
 
       {/* KPI Cards - Row 2: Week/Month */}
@@ -272,21 +272,21 @@ function DashboardPage() {
       </div>
 
       {/* Canteen Comparison (Company Manager) */}
-      {canteenComparison.length > 0 && (
+      {perCanteenKpi.length > 0 && (
         <div className="bg-white rounded-xl shadow p-5">
           <h3 className="font-semibold text-gray-700 mb-4">食堂对比</h3>
           <table className="w-full text-sm">
             <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">食堂</th><th className="px-3 py-2 text-right">当日营收</th><th className="px-3 py-2 text-right">当日支出</th><th className="px-3 py-2 text-right">当日毛利</th><th className="px-3 py-2 text-right">当月营收</th><th className="px-3 py-2 text-right">当月支出</th><th className="px-3 py-2 text-right">当月毛利</th></tr></thead>
             <tbody>
-              {canteenComparison.map((c, i) => (
+              {perCanteenKpi.map((c, i) => (
                 <tr key={i} className="border-t hover:bg-gray-50">
-                  <td className="px-3 py-2">{c.name as string}</td>
-                  <td className="px-3 py-2 text-right">{fmt(c.revenue)}</td>
-                  <td className="px-3 py-2 text-right">{fmt(c.expense)}</td>
-                  <td className="px-3 py-2 text-right">{fmt(c.profit)}</td>
+                  <td className="px-3 py-2">{(c.canteen_name as string) || '未知'}</td>
+                  <td className="px-3 py-2 text-right">{fmt(c.today_revenue)}</td>
+                  <td className="px-3 py-2 text-right">{fmt(c.today_expense)}</td>
+                  <td className="px-3 py-2 text-right">{fmt(c.today_gross_profit)}</td>
                   <td className="px-3 py-2 text-right">{fmt(c.month_revenue)}</td>
                   <td className="px-3 py-2 text-right">{fmt(c.month_expense)}</td>
-                  <td className="px-3 py-2 text-right">{fmt(c.month_profit)}</td>
+                  <td className="px-3 py-2 text-right">{fmt(c.month_gross_profit)}</td>
                 </tr>
               ))}
             </tbody>
@@ -363,7 +363,6 @@ function RevenuePage({ user }: { user: AuthUser }) {
       if (sRes.success && sRes.data) {
         const s = sRes.data as Record<string, unknown>[];
         setStalls(s);
-        // Stall manager auto-select their stall
         if (isStallMgr && s.length === 1) setForm(f => ({ ...f, stall_id: s[0].id as string }));
       }
       if (mRes.success && mRes.data) setMealTypes(mRes.data as Record<string, unknown>[]);
@@ -457,16 +456,22 @@ function RevenuePage({ user }: { user: AuthUser }) {
 function ExpensePage() {
   const [canteens, setCanteens] = useState<Record<string, unknown>[]>([]);
   const [stalls, setStalls] = useState<Record<string, unknown>[]>([]);
+  const [suppliers, setSuppliers] = useState<Record<string, unknown>[]>([]);
   const [records, setRecords] = useState<Record<string, unknown>[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [categories, setCategories] = useState<Record<string, unknown>[]>([]);
   const [products, setProducts] = useState<Record<string, unknown>[]>([]);
   const [specs, setSpecs] = useState<Record<string, unknown>[]>([]);
-  const [form, setForm] = useState({ canteen_id: '', stall_id: '', expense_date: new Date().toLocaleDateString('sv-SE'), category: '食材采购', amount: '', note: '', is_daily_repeat: false, product_category_id: '', product_id: '', product_spec_id: '', quantity: '', unit_price: '' });
+  const [form, setForm] = useState({ canteen_id: '', stall_id: '', expense_date: new Date().toLocaleDateString('sv-SE'), category: '食材采购', amount: '', note: '', is_daily_repeat: false, product_category_id: '', product_id: '', product_spec_id: '', quantity: '', unit_price: '', supplier_id: '' });
 
   useEffect(() => { apiFetch<ApiResp>('/api/dropdown/canteens').then(res => { if (res.success && res.data) setCanteens(res.data as Record<string, unknown>[]); }); }, []);
-  useEffect(() => { apiFetch<ApiResp>('/api/dropdown/stalls').then(res => { if (res.success && res.data) setStalls(res.data as Record<string, unknown>[]); }); }, []);
+  useEffect(() => { apiFetch<ApiResp>('/api/suppliers').then(res => { if (res.success && res.data) setSuppliers(res.data as Record<string, unknown>[]); }); }, []);
+  // Load stalls based on selected canteen
+  useEffect(() => {
+    if (!form.canteen_id) { setStalls([]); return; }
+    apiFetch<ApiResp>(`/api/dropdown/stalls?canteen_id=${form.canteen_id}`).then(res => { if (res.success && res.data) setStalls(res.data as Record<string, unknown>[]); });
+  }, [form.canteen_id]);
   useEffect(() => { apiFetch<ApiResp>('/api/settings/products/categories').then(res => { if (res.success && res.data) setCategories(res.data as Record<string, unknown>[]); }); }, []);
   useEffect(() => {
     if (!form.product_category_id) { setProducts([]); return; }
@@ -488,9 +493,12 @@ function ExpensePage() {
   const submit = async () => {
     if (!form.canteen_id || !form.amount || !form.expense_date) { alert('请填写必填项'); return; }
     const body: Record<string, unknown> = { canteen_id: form.canteen_id, stall_id: form.stall_id || null, expense_date: form.expense_date, category: form.category, amount: num(form.amount), note: form.note, is_daily_repeat: form.is_daily_repeat };
-    if (isMaterial) { body.product_category_id = form.product_category_id || null; body.product_id = form.product_id || null; body.product_spec_id = form.product_spec_id || null; body.quantity = form.quantity ? num(form.quantity) : null; body.unit_price = form.unit_price ? num(form.unit_price) : null; }
+    if (isMaterial) {
+      body.product_category_id = form.product_category_id || null; body.product_id = form.product_id || null; body.product_spec_id = form.product_spec_id || null; body.quantity = form.quantity ? num(form.quantity) : null; body.unit_price = form.unit_price ? num(form.unit_price) : null;
+      body.supplier_id = form.supplier_id || null;
+    }
     const res = await apiFetch<ApiResp>('/api/expense-records', { method: 'POST', body: JSON.stringify(body) });
-    if (res.success) { setForm(f => ({ ...f, amount: '', note: '', product_category_id: '', product_id: '', product_spec_id: '', quantity: '', unit_price: '', is_daily_repeat: false })); loadRecords(); } else alert(res.error);
+    if (res.success) { setForm(f => ({ ...f, amount: '', note: '', product_category_id: '', product_id: '', product_spec_id: '', quantity: '', unit_price: '', is_daily_repeat: false, supplier_id: '' })); loadRecords(); } else alert(res.error);
   };
 
   const deleteRecord = async (id: string) => {
@@ -504,8 +512,8 @@ function ExpensePage() {
     if (!res.success || !res.data) { alert('导出失败'); return; }
     const d = res.data as Record<string, unknown>;
     const recs = (d.records || []) as Record<string, unknown>[];
-    const header = '日期,食堂,档口,类别,商品,金额,备注';
-    const rows = recs.map(r => `${r.expense_date},${r.canteen_name || ''},${r.stall_name || ''},${r.category},${[r.product_category_name, r.product_name, r.product_spec_name].filter(Boolean).join('/') || ''},${r.amount},${(r.note as string || '').replace(/,/g, '，')}`);
+    const header = '日期,食堂,档口,类别,商品,供应商,金额,备注';
+    const rows = recs.map(r => `${r.expense_date},${r.canteen_name || ''},${r.stall_name || ''},${r.category},${[r.product_category_name, r.product_name, r.product_spec_name].filter(Boolean).join('/') || ''},${(r as Record<string, unknown>).supplier_name || ''},${r.amount},${(r.note as string || '').replace(/,/g, '，')}`);
     const csv = '\uFEFF' + header + '\n' + rows.join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = window.URL.createObjectURL(blob);
@@ -517,14 +525,15 @@ function ExpensePage() {
       <div className="bg-white rounded-xl shadow p-5">
         <h3 className="font-semibold text-gray-700 mb-4">支出录入</h3>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          <div><label className="block text-xs font-medium text-gray-600 mb-1">食堂 *</label><select value={form.canteen_id} onChange={e => setForm(f => ({ ...f, canteen_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择食堂</option>{canteens.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
+          <div><label className="block text-xs font-medium text-gray-600 mb-1">食堂 *</label><select value={form.canteen_id} onChange={e => setForm(f => ({ ...f, canteen_id: e.target.value, stall_id: '' }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择食堂</option>{canteens.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
           <div><label className="block text-xs font-medium text-gray-600 mb-1">档口（非必填）</label><select value={form.stall_id} onChange={e => setForm(f => ({ ...f, stall_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择档口</option>{stalls.map(s => <option key={s.id as string} value={s.id as string}>{s.name as string}</option>)}</select></div>
           <div><label className="block text-xs font-medium text-gray-600 mb-1">日期 *</label><input type="date" value={form.expense_date} onChange={e => setForm(f => ({ ...f, expense_date: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
-          <div><label className="block text-xs font-medium text-gray-600 mb-1">支出类别</label><select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value, product_category_id: '', product_id: '', product_spec_id: '' }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option>食材采购</option><option>人工成本</option><option>水电费</option><option>房租</option><option>设备维护</option><option>其他</option></select></div>
+          <div><label className="block text-xs font-medium text-gray-600 mb-1">支出类别</label><select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value, product_category_id: '', product_id: '', product_spec_id: '', supplier_id: '' }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option>食材采购</option><option>人工成本</option><option>水电费</option><option>房租</option><option>设备维护</option><option>其他</option></select></div>
           <div><label className="block text-xs font-medium text-gray-600 mb-1">金额 *</label><input type="number" step="0.01" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
           <div className="flex items-end pb-1"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.is_daily_repeat} onChange={e => setForm(f => ({ ...f, is_daily_repeat: e.target.checked }))} className="w-4 h-4" />当月每天重复</label></div>
           <div className="col-span-2 lg:col-span-3"><label className="block text-xs font-medium text-gray-600 mb-1">备注</label><input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
           {isMaterial && <>
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">供应商</label><select value={form.supplier_id} onChange={e => setForm(f => ({ ...f, supplier_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择供应商</option>{suppliers.map(s => <option key={s.id as string} value={s.id as string}>{s.name as string}</option>)}</select></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">商品品类</label><select value={form.product_category_id} onChange={e => setForm(f => ({ ...f, product_category_id: e.target.value, product_id: '', product_spec_id: '' }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择品类</option>{categories.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">商品名称</label><select value={form.product_id} onChange={e => setForm(f => ({ ...f, product_id: e.target.value, product_spec_id: '' }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择商品</option>{products.map(p => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}</select></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">规格</label><select value={form.product_spec_id} onChange={e => setForm(f => ({ ...f, product_spec_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择规格</option>{specs.map(s => <option key={s.id as string} value={s.id as string}>{s.name as string}</option>)}</select></div>
@@ -566,7 +575,7 @@ function ExpensePage() {
 }
 
 /* ─── SETTINGS PAGE ─── */
-type SettingsTab = 'my_account' | 'canteens' | 'stalls' | 'meal_types' | 'accounts' | 'products' | 'logs';
+type SettingsTab = 'my_account' | 'canteens' | 'stalls' | 'meal_types' | 'accounts' | 'products' | 'suppliers' | 'logs';
 
 function SettingsPage({ user }: { user: AuthUser }) {
   const isStallManager = user.role_code === 'STALL_MANAGER';
@@ -581,17 +590,17 @@ function SettingsPage({ user }: { user: AuthUser }) {
   if (isCompanyManager) {
     tabs = tabs.concat([
       { key: 'canteens', label: '食堂管理' }, { key: 'stalls', label: '档口管理' },
-      { key: 'meal_types', label: '餐别管理' }, { key: 'accounts', label: '账号管理' }, { key: 'products', label: '商品管理' }, { key: 'logs', label: '操作日志' },
+      { key: 'meal_types', label: '餐别管理' }, { key: 'accounts', label: '账号管理' }, { key: 'products', label: '商品管理' }, { key: 'suppliers', label: '供应商管理' }, { key: 'logs', label: '操作日志' },
     ]);
   } else if (isCanteenManager) {
     tabs = tabs.concat([
       { key: 'stalls', label: '档口管理' },
-      { key: 'meal_types', label: '餐别管理' }, { key: 'accounts', label: '账号管理' }, { key: 'products', label: '商品管理' }, { key: 'logs', label: '操作日志' },
+      { key: 'meal_types', label: '餐别管理' }, { key: 'accounts', label: '账号管理' }, { key: 'products', label: '商品管理' }, { key: 'suppliers', label: '供应商管理' }, { key: 'logs', label: '操作日志' },
     ]);
   } else {
     tabs = tabs.concat([
       { key: 'canteens', label: '食堂管理' }, { key: 'stalls', label: '档口管理' },
-      { key: 'meal_types', label: '餐别管理' }, { key: 'accounts', label: '账号管理' }, { key: 'products', label: '商品管理' }, { key: 'logs', label: '操作日志' },
+      { key: 'meal_types', label: '餐别管理' }, { key: 'accounts', label: '账号管理' }, { key: 'products', label: '商品管理' }, { key: 'suppliers', label: '供应商管理' }, { key: 'logs', label: '操作日志' },
     ]);
   }
 
@@ -608,6 +617,7 @@ function SettingsPage({ user }: { user: AuthUser }) {
       {tab === 'meal_types' && <MealTypeManager />}
       {tab === 'accounts' && <AccountManager user={user} />}
       {tab === 'products' && <ProductManager />}
+      {tab === 'suppliers' && <SupplierManager />}
       {tab === 'logs' && <OperationLogViewer />}
     </div>
   );
@@ -617,22 +627,13 @@ function SettingsPage({ user }: { user: AuthUser }) {
 function MyAccountSection({ user }: { user: AuthUser }) {
   const [oldPw, setOldPw] = useState('');
   const [newPw, setNewPw] = useState('');
-  const [companyName, setCompanyName] = useState(user.company_name || user.org_name || '');
   const [msg, setMsg] = useState('');
   const [errMsg, setErrMsg] = useState('');
-  const companyId = user.role_code === 'COMPANY_MANAGER' ? user.org_id : null;
 
   const changePassword = async () => {
     if (!oldPw || !newPw) { setErrMsg('请填写旧密码和新密码'); return; }
     const res = await apiFetch<ApiResp>('/api/settings/users/self/password', { method: 'PUT', body: JSON.stringify({ old_password: oldPw, new_password: newPw }) });
     if (res.success) { setMsg('密码修改成功'); setOldPw(''); setNewPw(''); setErrMsg(''); } else { setErrMsg(res.error || '修改失败'); setMsg(''); }
-  };
-
-  const updateCompanyName = async () => {
-    if (!companyId) { setErrMsg('仅公司负责人可修改公司名称'); return; }
-    if (!companyName.trim()) { setErrMsg('公司名称不能为空'); return; }
-    const res = await apiFetch<ApiResp>(`/api/companies/${companyId}`, { method: 'PUT', body: JSON.stringify({ name: companyName.trim() }) });
-    if (res.success) { setMsg('公司名称修改成功'); setErrMsg(''); } else { setErrMsg(res.error || '修改失败'); setMsg(''); }
   };
 
   return (
@@ -642,14 +643,6 @@ function MyAccountSection({ user }: { user: AuthUser }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div><span className="text-gray-500">账号名称：</span><span className="font-medium">{user.real_name || user.username}</span></div>
           <div><span className="text-gray-500">角色：</span><span className="font-medium">{ROLE_LABEL[user.role_code] || user.role_code}</span></div>
-          <div><span className="text-gray-500">公司名称：</span>
-            {companyId ? (
-              <span className="inline-flex items-center gap-2">
-                <input value={companyName} onChange={e => setCompanyName(e.target.value)} className="border rounded px-2 py-1 text-sm" />
-                <button onClick={updateCompanyName} className="text-blue-600 text-xs hover:underline">保存</button>
-              </span>
-            ) : <span className="font-medium">{user.company_name || user.org_name || '-'}</span>}
-          </div>
           <div><span className="text-gray-500">有效期：</span>
             <span className="font-medium">{user.expires_at ? new Date(user.expires_at).toLocaleDateString('zh-CN') : '永久'}</span>
             {user.role_code !== 'SYSTEM_DEVELOPER' && <span className="text-xs text-gray-400 ml-2">（由开发者设定，到期后账号停用）</span>}
@@ -678,10 +671,10 @@ function CanteenManagerSection() {
   const [companies, setCompanies] = useState<Record<string, unknown>[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', address: '', contact_name: '', contact_phone: '', manager_id: '', company_id: '' });
+  const [form, setForm] = useState({ name: '', address: '', contact_name: '', contact_phone: '', manager_id: '', company_id: '', note: '' });
 
   const load = useCallback(async () => {
-    const [cRes, uRes, coRes] = await Promise.all([apiFetch<ApiResp>('/api/companies'), apiFetch<ApiResp>('/api/users?role_code=CANTEEN_MANAGER'), apiFetch<ApiResp>('/api/companies')]);
+    const [cRes, uRes] = await Promise.all([apiFetch<ApiResp>('/api/companies'), apiFetch<ApiResp>('/api/users?role_code=CANTEEN_MANAGER')]);
     if (cRes.success && cRes.data) {
       const cos = cRes.data as Record<string, unknown>[];
       setCompanies(cos);
@@ -711,13 +704,13 @@ function CanteenManagerSection() {
 
   const startEdit = (c: Record<string, unknown>) => {
     setEditingId(c.id as string);
-    setForm({ name: c.name as string || '', address: c.address as string || '', contact_name: c.contact_name as string || '', contact_phone: c.contact_phone as string || '', manager_id: c.manager_id as string || '', company_id: c.company_id as string || '' });
+    setForm({ name: c.name as string || '', address: c.address as string || '', contact_name: c.contact_name as string || '', contact_phone: c.contact_phone as string || '', manager_id: c.manager_id as string || '', company_id: c.company_id as string || '', note: c.note as string || '' });
     setShowForm(true);
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center"><h3 className="font-semibold text-gray-700">食堂管理</h3><button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ name: '', address: '', contact_name: '', contact_phone: '', manager_id: '', company_id: companies[0]?.id as string || '' }); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm && !editingId ? '取消' : '新增食堂'}</button></div>
+      <div className="flex justify-between items-center"><h3 className="font-semibold text-gray-700">食堂管理</h3><button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ name: '', address: '', contact_name: '', contact_phone: '', manager_id: '', company_id: companies[0]?.id as string || '', note: '' }); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm && !editingId ? '取消' : '新增食堂'}</button></div>
       {showForm && (
         <div className="bg-white rounded-xl shadow p-5">
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
@@ -727,6 +720,7 @@ function CanteenManagerSection() {
             <div><label className="block text-xs font-medium text-gray-600 mb-1">联系电话</label><input value={form.contact_phone} onChange={e => setForm(f => ({ ...f, contact_phone: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">食堂负责人</label><select value={form.manager_id} onChange={e => setForm(f => ({ ...f, manager_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择负责人</option>{users.map(u => <option key={u.id as string} value={u.id as string}>{u.real_name as string || u.username as string}</option>)}</select></div>
             {!editingId && <div><label className="block text-xs font-medium text-gray-600 mb-1">所属公司 *</label><select value={form.company_id} onChange={e => setForm(f => ({ ...f, company_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择公司</option>{companies.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>}
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">备注</label><input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
           </div>
           <div className="flex gap-2 mt-4"><button onClick={submit} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm">{editingId ? '保存' : '创建'}</button><button onClick={() => { setShowForm(false); setEditingId(null); }} className="bg-gray-200 text-gray-700 px-6 py-2 rounded-lg text-sm">取消</button></div>
         </div>
@@ -749,7 +743,7 @@ function StallManagerSection() {
   const [selectedCanteen, setSelectedCanteen] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', manager_id: '' });
+  const [form, setForm] = useState({ name: '', manager_id: '', note: '' });
 
   const load = useCallback(async () => {
     const [cRes, mRes] = await Promise.all([apiFetch<ApiResp>('/api/dropdown/canteens'), apiFetch<ApiResp>('/api/dropdown/stall-managers')]);
@@ -766,40 +760,56 @@ function StallManagerSection() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadStalls(); }, [loadStalls]);
 
+  const canteenName = (id: string) => canteens.find(c => c.id === id)?.name as string || '-';
+
   const submit = async () => {
     if (!form.name.trim() || !selectedCanteen) { alert('请填写档口名称并选择食堂'); return; }
     if (editingId) {
-      const res = await apiFetch<ApiResp>(`/api/stalls/${editingId}`, { method: 'PUT', body: JSON.stringify({ name: form.name, manager_id: form.manager_id || null }) });
-      if (res.success) { setShowForm(false); setEditingId(null); setForm({ name: '', manager_id: '' }); loadStalls(); } else alert(res.error);
+      const res = await apiFetch<ApiResp>(`/api/stalls/${editingId}`, { method: 'PUT', body: JSON.stringify({ name: form.name, manager_id: form.manager_id || null, note: form.note }) });
+      if (res.success) { setShowForm(false); setEditingId(null); setForm({ name: '', manager_id: '', note: '' }); loadStalls(); } else alert(res.error);
     } else {
-      const res = await apiFetch<ApiResp>(`/api/canteens/${selectedCanteen}/stalls`, { method: 'POST', body: JSON.stringify({ name: form.name, manager_id: form.manager_id || null }) });
-      if (res.success) { setShowForm(false); setForm({ name: '', manager_id: '' }); loadStalls(); } else alert(res.error);
+      const res = await apiFetch<ApiResp>(`/api/canteens/${selectedCanteen}/stalls`, { method: 'POST', body: JSON.stringify({ name: form.name, manager_id: form.manager_id || null, note: form.note }) });
+      if (res.success) { setShowForm(false); setForm({ name: '', manager_id: '', note: '' }); loadStalls(); } else alert(res.error);
     }
   };
 
   const startEdit = (s: Record<string, unknown>) => {
     setEditingId(s.id as string);
-    setForm({ name: s.name as string || '', manager_id: s.manager_id as string || '' });
+    setForm({ name: s.name as string || '', manager_id: s.manager_id as string || '', note: s.note as string || '' });
     setShowForm(true);
   };
 
+  const managerName = (id: string) => stallManagers.find(u => u.id === id)?.real_name as string || stallManagers.find(u => u.id === id)?.username as string || '-';
+
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center"><h3 className="font-semibold text-gray-700">档口管理</h3><button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ name: '', manager_id: '' }); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm && !editingId ? '取消' : '新增档口'}</button></div>
+      <div className="flex justify-between items-center"><h3 className="font-semibold text-gray-700">档口管理</h3><button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ name: '', manager_id: '', note: '' }); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm && !editingId ? '取消' : '新增档口'}</button></div>
       <div className="flex items-center gap-3"><label className="text-sm text-gray-600">选择食堂：</label><select value={selectedCanteen} onChange={e => setSelectedCanteen(e.target.value)} className="border rounded-lg px-3 py-2 text-sm"><option value="">请选择</option>{canteens.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
       {showForm && (
         <div className="bg-white rounded-xl shadow p-5">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
             <div><label className="block text-xs font-medium text-gray-600 mb-1">档口名称 *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs font-medium text-gray-600 mb-1">档口负责人</label><select value={form.manager_id} onChange={e => setForm(f => ({ ...f, manager_id: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm"><option value="">选择负责人</option>{stallManagers.map(u => <option key={u.id as string} value={u.id as string}>{u.real_name as string || u.username as string}</option>)}</select></div>
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">备注</label><input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
           </div>
           <div className="flex gap-2 mt-4"><button onClick={submit} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm">{editingId ? '保存' : '创建'}</button><button onClick={() => { setShowForm(false); setEditingId(null); }} className="bg-gray-200 text-gray-700 px-6 py-2 rounded-lg text-sm">取消</button></div>
         </div>
       )}
       <div className="bg-white rounded-xl shadow overflow-hidden">
         <table className="w-full text-sm">
-          <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">名称</th><th className="px-3 py-2 text-left">负责人</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
-          <tbody>{stalls.map(s => (<tr key={s.id as string} className="border-t hover:bg-gray-50"><td className="px-3 py-2">{s.name as string}</td><td className="px-3 py-2">{stallManagers.find(u => u.id === s.manager_id)?.real_name as string || '-'}</td><td className="px-3 py-2 text-center"><button onClick={() => startEdit(s)} className="text-blue-600 hover:underline text-xs">编辑</button></td></tr>))}</tbody>
+          <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">档口名称</th><th className="px-3 py-2 text-left">所属食堂</th><th className="px-3 py-2 text-left">负责人</th><th className="px-3 py-2 text-left">备注</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
+          <tbody>
+            {stalls.map(s => (
+              <tr key={s.id as string} className="border-t hover:bg-gray-50">
+                <td className="px-3 py-2">{s.name as string}</td>
+                <td className="px-3 py-2">{canteenName(s.canteen_id as string)}</td>
+                <td className="px-3 py-2">{managerName(s.manager_id as string)}</td>
+                <td className="px-3 py-2 text-gray-500">{s.note as string || '-'}</td>
+                <td className="px-3 py-2 text-center"><button onClick={() => startEdit(s)} className="text-blue-600 hover:underline text-xs">编辑</button></td>
+              </tr>
+            ))}
+            {stalls.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-400">请先选择食堂</td></tr>}
+          </tbody>
         </table>
       </div>
     </div>
@@ -817,25 +827,52 @@ function MealTypeManager() {
   useEffect(() => { apiFetch<ApiResp>('/api/dropdown/canteens').then(res => { if (res.success && res.data) setCanteens(res.data as Record<string, unknown>[]); }); }, []);
   useEffect(() => { if (!selectedCanteen) { setMealTypes([]); return; } apiFetch<ApiResp>(`/api/meal-types?canteen_id=${selectedCanteen}`).then(res => { if (res.success && res.data) setMealTypes(res.data as Record<string, unknown>[]); }); }, [selectedCanteen]);
 
+  const canteenName = (id: string) => canteens.find(c => c.id === id)?.name as string || '-';
+
   const add = async () => { if (!newName.trim() || !selectedCanteen) return; const res = await apiFetch<ApiResp>('/api/meal-types', { method: 'POST', body: JSON.stringify({ name: newName.trim(), canteen_id: selectedCanteen }) }); if (res.success) { setNewName(''); setShowForm(false); apiFetch<ApiResp>(`/api/meal-types?canteen_id=${selectedCanteen}`).then(res => { if (res.success && res.data) setMealTypes(res.data as Record<string, unknown>[]); }); } else alert(res.error); };
   const del = async (id: string) => { if (!confirm('确认删除？')) return; const res = await apiFetch<ApiResp>(`/api/meal-types/${id}`, { method: 'DELETE' }); if (res.success) apiFetch<ApiResp>(`/api/meal-types?canteen_id=${selectedCanteen}`).then(res => { if (res.success && res.data) setMealTypes(res.data as Record<string, unknown>[]); }); };
+
+  // All meal types across all canteens for list view
+  const [allMealTypes, setAllMealTypes] = useState<Record<string, unknown>[]>([]);
+  const loadAll = useCallback(async () => {
+    const cRes = await apiFetch<ApiResp>('/api/dropdown/canteens');
+    if (cRes.success && cRes.data) {
+      const cs = cRes.data as Record<string, unknown>[];
+      const all: Record<string, unknown>[] = [];
+      for (const c of cs) {
+        const mRes = await apiFetch<ApiResp>(`/api/meal-types?canteen_id=${c.id}`);
+        if (mRes.success && mRes.data) all.push(...(mRes.data as Record<string, unknown>[]).map(m => ({ ...m, canteen_name: c.name })));
+      }
+      setAllMealTypes(all);
+    }
+  }, []);
+  useEffect(() => { loadAll(); }, [loadAll]);
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center"><h3 className="font-semibold text-gray-700">餐别管理</h3><button onClick={() => setShowForm(!showForm)} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm ? '取消' : '新增餐别'}</button></div>
-      <div className="flex items-center gap-3"><label className="text-sm text-gray-600">食堂：</label><select value={selectedCanteen} onChange={e => setSelectedCanteen(e.target.value)} className="border rounded-lg px-3 py-2 text-sm"><option value="">请选择</option>{canteens.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
       {showForm && (
         <div className="bg-white rounded-xl shadow p-5">
-          <div className="flex gap-3 items-end">
-            <div className="flex-1"><label className="block text-xs font-medium text-gray-600 mb-1">餐别名称</label><input value={newName} onChange={e => setNewName(e.target.value)} placeholder="如：早餐" className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+          <div className="flex gap-3 items-end flex-wrap">
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">食堂 *</label><select value={selectedCanteen} onChange={e => setSelectedCanteen(e.target.value)} className="border rounded-lg px-3 py-2 text-sm"><option value="">请选择</option>{canteens.map(c => <option key={c.id as string} value={c.id as string}>{c.name as string}</option>)}</select></div>
+            <div className="flex-1 min-w-[200px]"><label className="block text-xs font-medium text-gray-600 mb-1">餐别名称</label><input value={newName} onChange={e => setNewName(e.target.value)} placeholder="如：早餐" className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
             <button onClick={add} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">添加</button>
           </div>
         </div>
       )}
       <div className="bg-white rounded-xl shadow overflow-hidden">
         <table className="w-full text-sm">
-          <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">名称</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
-          <tbody>{mealTypes.map(m => <tr key={m.id as string} className="border-t hover:bg-gray-50"><td className="px-3 py-2">{m.name as string}</td><td className="px-3 py-2 text-center"><button onClick={() => del(m.id as string)} className="text-red-600 hover:underline text-xs">删除</button></td></tr>)}</tbody>
+          <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">所属食堂</th><th className="px-3 py-2 text-left">餐别</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
+          <tbody>
+            {allMealTypes.map(m => (
+              <tr key={m.id as string} className="border-t hover:bg-gray-50">
+                <td className="px-3 py-2">{m.canteen_name as string || '-'}</td>
+                <td className="px-3 py-2">{m.name as string}</td>
+                <td className="px-3 py-2 text-center"><button onClick={() => del(m.id as string)} className="text-red-600 hover:underline text-xs">删除</button></td>
+              </tr>
+            ))}
+            {allMealTypes.length === 0 && <tr><td colSpan={3} className="px-3 py-4 text-center text-gray-400">暂无数据</td></tr>}
+          </tbody>
         </table>
       </div>
     </div>
@@ -870,6 +907,7 @@ function AccountManager({ user: currentUser }: { user: AuthUser }) {
 
   useEffect(() => { load(); apiFetch<ApiResp>('/api/dropdown/stalls').then(res => { if (res.success && res.data) setStalls(res.data as Record<string, unknown>[]); }); }, [load]);
 
+  // Reload stalls when canteen changes for org_id dropdown
   const orgOptions = form.role_code === 'CANTEEN_MANAGER' ? canteens : form.role_code === 'STALL_MANAGER' ? stalls : [];
 
   const submit = async () => {
@@ -922,60 +960,81 @@ function AccountManager({ user: currentUser }: { user: AuthUser }) {
   );
 }
 
-/* ─── PRODUCT MANAGER ─── */
+/* ─── PRODUCT MANAGER ─── (List view with Name/Category/Spec/Note) */
 function ProductManager() {
   const [categories, setCategories] = useState<Record<string, unknown>[]>([]);
   const [products, setProducts] = useState<Record<string, unknown>[]>([]);
   const [specs, setSpecs] = useState<Record<string, unknown>[]>([]);
-  const [selectedCat, setSelectedCat] = useState('');
-  const [selectedProd, setSelectedProd] = useState('');
+  const [allItems, setAllItems] = useState<Record<string, unknown>[]>([]);
   const [showAddCat, setShowAddCat] = useState(false);
   const [showAddProd, setShowAddProd] = useState(false);
   const [showAddSpec, setShowAddSpec] = useState(false);
   const [newCatName, setNewCatName] = useState('');
   const [newProdName, setNewProdName] = useState('');
   const [newSpecName, setNewSpecName] = useState('');
+  const [selectedCat, setSelectedCat] = useState('');
+  const [selectedProd, setSelectedProd] = useState('');
+  // Edit states
+  const [editingCatId, setEditingCatId] = useState<string | null>(null);
+  const [editingCatName, setEditingCatName] = useState('');
+  const [editingProdId, setEditingProdId] = useState<string | null>(null);
+  const [editingProdName, setEditingProdName] = useState('');
+  const [editingSpecId, setEditingSpecId] = useState<string | null>(null);
+  const [editingSpecName, setEditingSpecName] = useState('');
 
   const loadCats = useCallback(async () => { const res = await apiFetch<ApiResp>('/api/settings/products/categories'); if (res.success && res.data) setCategories(res.data as Record<string, unknown>[]); }, []);
-  const loadProds = useCallback(async () => { if (!selectedCat) { setProducts([]); return; } const res = await apiFetch<ApiResp>(`/api/settings/products?category_id=${selectedCat}`); if (res.success && res.data) setProducts(res.data as Record<string, unknown>[]); }, [selectedCat]);
-  const loadSpecs_ = useCallback(async () => { if (!selectedProd) { setSpecs([]); return; } const res = await apiFetch<ApiResp>(`/api/settings/products/specs?product_id=${selectedProd}`); if (res.success && res.data) setSpecs(res.data as Record<string, unknown>[]); }, [selectedProd]);
 
-  useEffect(() => { loadCats(); }, [loadCats]);
-  useEffect(() => { loadProds(); setSelectedProd(''); setSpecs([]); }, [loadProds]);
-  useEffect(() => { loadSpecs_(); }, [loadSpecs_]);
-
-  const addCat = async () => { if (!newCatName.trim()) return; const res = await apiFetch<ApiResp>('/api/settings/products/categories', { method: 'POST', body: JSON.stringify({ name: newCatName.trim() }) }); if (res.success) { setNewCatName(''); setShowAddCat(false); loadCats(); } else alert(res.error); };
-  const addProd = async () => { if (!newProdName.trim() || !selectedCat) return; const res = await apiFetch<ApiResp>('/api/settings/products', { method: 'POST', body: JSON.stringify({ name: newProdName.trim(), category_id: selectedCat }) }); if (res.success) { setNewProdName(''); setShowAddProd(false); loadProds(); } else alert(res.error); };
-  const addSpec = async () => { if (!newSpecName.trim() || !selectedProd) return; const res = await apiFetch<ApiResp>('/api/settings/products/specs', { method: 'POST', body: JSON.stringify({ name: newSpecName.trim(), product_id: selectedProd }) }); if (res.success) { setNewSpecName(''); setShowAddSpec(false); loadSpecs_(); } else alert(res.error); };
-  const delCat = async (id: string) => { if (!confirm('删除品类将同时删除下属商品和规格')) return; const r = await apiFetch<ApiResp>(`/api/settings/products/categories/${id}`, { method: 'DELETE' }); if (r.success) { loadCats(); setSelectedCat(''); } };
-  const delProd = async (id: string) => { if (!confirm('确认删除？')) return; const r = await apiFetch<ApiResp>(`/api/settings/products/${id}`, { method: 'DELETE' }); if (r.success) { loadProds(); setSelectedProd(''); } };
-  const delSpec = async (id: string) => { if (!confirm('确认删除？')) return; const r = await apiFetch<ApiResp>(`/api/settings/products/specs/${id}`, { method: 'DELETE' }); if (r.success) loadSpecs_(); };
-
-  // Export products as CSV
-  const exportProducts = async () => {
-    const header = '品类,商品,规格';
-    const rows: string[] = [];
-    for (const cat of categories) {
-      const catRes = await apiFetch<ApiResp>(`/api/settings/products?category_id=${cat.id}`);
-      if (catRes.success && catRes.data) {
-        const prods = catRes.data as Record<string, unknown>[];
+  const buildAllItems = useCallback(async () => {
+    const cRes = await apiFetch<ApiResp>('/api/settings/products/categories');
+    if (!cRes.success || !cRes.data) return;
+    const cats = cRes.data as Record<string, unknown>[];
+    const items: Record<string, unknown>[] = [];
+    for (const cat of cats) {
+      const pRes = await apiFetch<ApiResp>(`/api/settings/products?category_id=${cat.id}`);
+      if (pRes.success && pRes.data) {
+        const prods = pRes.data as Record<string, unknown>[];
         for (const p of prods) {
-          const specRes = await apiFetch<ApiResp>(`/api/settings/products/specs?product_id=${p.id}`);
-          if (specRes.success && specRes.data) {
-            const sps = specRes.data as Record<string, unknown>[];
-            if (sps.length === 0) rows.push(`${cat.name},${p.name},`);
-            else for (const s of sps) rows.push(`${cat.name},${p.name},${s.name}`);
+          const sRes = await apiFetch<ApiResp>(`/api/settings/products/specs?product_id=${p.id}`);
+          if (sRes.success && sRes.data) {
+            const sps = sRes.data as Record<string, unknown>[];
+            if (sps.length === 0) items.push({ id: p.id, product_id: p.id, name: p.name, category: cat.name, spec: '', note: '', cat_id: cat.id, spec_id: '' });
+            for (const s of sps) items.push({ id: s.id, product_id: p.id, name: p.name, category: cat.name, spec: s.name, note: s.note || '', cat_id: cat.id, spec_id: s.id });
           }
         }
       }
     }
+    setAllItems(items);
+  }, []);
+
+  useEffect(() => { loadCats(); buildAllItems(); }, [loadCats, buildAllItems]);
+
+  const loadProds = useCallback(async () => { if (!selectedCat) { setProducts([]); return; } const res = await apiFetch<ApiResp>(`/api/settings/products?category_id=${selectedCat}`); if (res.success && res.data) setProducts(res.data as Record<string, unknown>[]); }, [selectedCat]);
+  const loadSpecs_ = useCallback(async () => { if (!selectedProd) { setSpecs([]); return; } const res = await apiFetch<ApiResp>(`/api/settings/products/specs?product_id=${selectedProd}`); if (res.success && res.data) setSpecs(res.data as Record<string, unknown>[]); }, [selectedProd]);
+
+  useEffect(() => { loadProds(); setSelectedProd(''); setSpecs([]); }, [loadProds]);
+  useEffect(() => { loadSpecs_(); }, [loadSpecs_]);
+
+  const addCat = async () => { if (!newCatName.trim()) return; const res = await apiFetch<ApiResp>('/api/settings/products/categories', { method: 'POST', body: JSON.stringify({ name: newCatName.trim() }) }); if (res.success) { setNewCatName(''); setShowAddCat(false); loadCats(); buildAllItems(); } else alert(res.error); };
+  const addProd = async () => { if (!newProdName.trim() || !selectedCat) return; const res = await apiFetch<ApiResp>('/api/settings/products', { method: 'POST', body: JSON.stringify({ name: newProdName.trim(), category_id: selectedCat }) }); if (res.success) { setNewProdName(''); setShowAddProd(false); loadProds(); buildAllItems(); } else alert(res.error); };
+  const addSpec = async () => { if (!newSpecName.trim() || !selectedProd) return; const res = await apiFetch<ApiResp>('/api/settings/products/specs', { method: 'POST', body: JSON.stringify({ name: newSpecName.trim(), product_id: selectedProd }) }); if (res.success) { setNewSpecName(''); setShowAddSpec(false); loadSpecs_(); buildAllItems(); } else alert(res.error); };
+  const delCat = async (id: string) => { if (!confirm('删除品类将同时删除下属商品和规格')) return; const r = await apiFetch<ApiResp>(`/api/settings/products/categories/${id}`, { method: 'DELETE' }); if (r.success) { loadCats(); setSelectedCat(''); buildAllItems(); } };
+  const delProd = async (id: string) => { if (!confirm('确认删除？')) return; const r = await apiFetch<ApiResp>(`/api/settings/products/${id}`, { method: 'DELETE' }); if (r.success) { loadProds(); setSelectedProd(''); buildAllItems(); } };
+  const delSpec = async (id: string) => { if (!confirm('确认删除？')) return; const r = await apiFetch<ApiResp>(`/api/settings/products/specs/${id}`, { method: 'DELETE' }); if (r.success) { loadSpecs_(); buildAllItems(); } };
+
+  // Edit functions
+  const updateCatName = async (id: string) => { if (!editingCatName.trim()) return; const res = await apiFetch<ApiResp>(`/api/settings/products/categories/${id}`, { method: 'PUT', body: JSON.stringify({ name: editingCatName.trim() }) }); if (res.success) { setEditingCatId(null); loadCats(); buildAllItems(); } else alert(res.error); };
+  const updateProdName = async (id: string) => { if (!editingProdName.trim()) return; const res = await apiFetch<ApiResp>(`/api/settings/products/${id}`, { method: 'PUT', body: JSON.stringify({ name: editingProdName.trim() }) }); if (res.success) { setEditingProdId(null); loadProds(); buildAllItems(); } else alert(res.error); };
+  const updateSpecName = async (id: string) => { if (!editingSpecName.trim()) return; const res = await apiFetch<ApiResp>(`/api/settings/products/specs/${id}`, { method: 'PUT', body: JSON.stringify({ name: editingSpecName.trim() }) }); if (res.success) { setEditingSpecId(null); loadSpecs_(); buildAllItems(); } else alert(res.error); };
+
+  const exportProducts = async () => {
+    const header = '名称,品类,规格,备注';
+    const rows = allItems.map(r => `${r.name},${r.category},${r.spec},${(r.note as string || '').replace(/,/g, '，')}`);
     const csv = '\uFEFF' + header + '\n' + rows.join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = `商品目录_${new Date().toLocaleDateString('sv-SE')}.csv`; a.click(); window.URL.revokeObjectURL(url);
   };
 
-  // Import products from CSV
   const importProducts = () => {
     const input = document.createElement('input');
     input.type = 'file'; input.accept = '.csv';
@@ -1009,7 +1068,7 @@ function ProductManager() {
         }
       }
       alert(`导入完成，新增 ${count} 条记录`);
-      loadCats(); setSelectedCat(''); setSelectedProd('');
+      loadCats(); buildAllItems(); setSelectedCat(''); setSelectedProd('');
     };
     input.click();
   };
@@ -1023,22 +1082,160 @@ function ProductManager() {
           <button onClick={exportProducts} className="bg-gray-600 text-white px-3 py-1.5 rounded-lg text-sm">导出</button>
         </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      {/* Add form row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-white rounded-xl shadow p-4">
           <div className="flex justify-between items-center mb-3"><h4 className="font-medium text-gray-600">商品品类</h4><button onClick={() => setShowAddCat(!showAddCat)} className="text-blue-600 text-sm">+添加</button></div>
           {showAddCat && <div className="flex gap-2 mb-3"><input value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="品类名称" className="border rounded px-2 py-1 text-sm flex-1" /><button onClick={addCat} className="bg-blue-600 text-white px-3 py-1 rounded text-sm">添加</button></div>}
-          {categories.map(c => <div key={c.id as string} className={`flex justify-between items-center px-3 py-2 rounded cursor-pointer text-sm ${selectedCat === c.id ? 'bg-blue-50 text-blue-700 font-medium' : 'hover:bg-gray-50'}`} onClick={() => setSelectedCat(c.id as string)}><span>{c.name as string}</span><button onClick={e => { e.stopPropagation(); delCat(c.id as string); }} className="text-red-400 text-xs hover:text-red-600">删除</button></div>)}
+          {categories.map(c => (
+            <div key={c.id as string} className={`flex justify-between items-center px-3 py-2 rounded cursor-pointer text-sm ${selectedCat === c.id ? 'bg-blue-50 text-blue-700 font-medium' : 'hover:bg-gray-50'}`} onClick={() => setSelectedCat(c.id as string)}>
+              {editingCatId === c.id ? (
+                <input value={editingCatName} onChange={e => setEditingCatName(e.target.value)} onBlur={() => updateCatName(c.id as string)} onKeyDown={e => e.key === 'Enter' && updateCatName(c.id as string)} className="border rounded px-2 py-0.5 text-sm flex-1" onClick={e => e.stopPropagation()} />
+              ) : (
+                <span onDoubleClick={() => { setEditingCatId(c.id as string); setEditingCatName(c.name as string); }}>{c.name as string}</span>
+              )}
+              <button onClick={e => { e.stopPropagation(); delCat(c.id as string); }} className="text-red-400 text-xs hover:text-red-600 ml-2">删除</button>
+            </div>
+          ))}
         </div>
         <div className="bg-white rounded-xl shadow p-4">
           <div className="flex justify-between items-center mb-3"><h4 className="font-medium text-gray-600">商品</h4><button onClick={() => setShowAddProd(!showAddProd)} className="text-blue-600 text-sm" disabled={!selectedCat}>+添加</button></div>
           {showAddProd && selectedCat && <div className="flex gap-2 mb-3"><input value={newProdName} onChange={e => setNewProdName(e.target.value)} placeholder="商品名称" className="border rounded px-2 py-1 text-sm flex-1" /><button onClick={addProd} className="bg-blue-600 text-white px-3 py-1 rounded text-sm">添加</button></div>}
-          {products.map(p => <div key={p.id as string} className={`flex justify-between items-center px-3 py-2 rounded cursor-pointer text-sm ${selectedProd === p.id ? 'bg-blue-50 text-blue-700 font-medium' : 'hover:bg-gray-50'}`} onClick={() => setSelectedProd(p.id as string)}><span>{p.name as string}</span><button onClick={e => { e.stopPropagation(); delProd(p.id as string); }} className="text-red-400 text-xs hover:text-red-600">删除</button></div>)}
+          {products.map(p => (
+            <div key={p.id as string} className={`flex justify-between items-center px-3 py-2 rounded cursor-pointer text-sm ${selectedProd === p.id ? 'bg-blue-50 text-blue-700 font-medium' : 'hover:bg-gray-50'}`} onClick={() => setSelectedProd(p.id as string)}>
+              {editingProdId === p.id ? (
+                <input value={editingProdName} onChange={e => setEditingProdName(e.target.value)} onBlur={() => updateProdName(p.id as string)} onKeyDown={e => e.key === 'Enter' && updateProdName(p.id as string)} className="border rounded px-2 py-0.5 text-sm flex-1" onClick={e => e.stopPropagation()} />
+              ) : (
+                <span onDoubleClick={() => { setEditingProdId(p.id as string); setEditingProdName(p.name as string); }}>{p.name as string}</span>
+              )}
+              <button onClick={e => { e.stopPropagation(); delProd(p.id as string); }} className="text-red-400 text-xs hover:text-red-600 ml-2">删除</button>
+            </div>
+          ))}
         </div>
         <div className="bg-white rounded-xl shadow p-4">
           <div className="flex justify-between items-center mb-3"><h4 className="font-medium text-gray-600">规格</h4><button onClick={() => setShowAddSpec(!showAddSpec)} className="text-blue-600 text-sm" disabled={!selectedProd}>+添加</button></div>
           {showAddSpec && selectedProd && <div className="flex gap-2 mb-3"><input value={newSpecName} onChange={e => setNewSpecName(e.target.value)} placeholder="规格名称（如：斤、千克、箱）" className="border rounded px-2 py-1 text-sm flex-1" /><button onClick={addSpec} className="bg-blue-600 text-white px-3 py-1 rounded text-sm">添加</button></div>}
-          {specs.map(s => <div key={s.id as string} className="flex justify-between items-center px-3 py-2 text-sm hover:bg-gray-50 rounded"><span>{s.name as string}</span><button onClick={() => delSpec(s.id as string)} className="text-red-400 text-xs hover:text-red-600">删除</button></div>)}
+          {specs.map(s => (
+            <div key={s.id as string} className="flex justify-between items-center px-3 py-2 text-sm hover:bg-gray-50 rounded">
+              {editingSpecId === s.id ? (
+                <input value={editingSpecName} onChange={e => setEditingSpecName(e.target.value)} onBlur={() => updateSpecName(s.id as string)} onKeyDown={e => e.key === 'Enter' && updateSpecName(s.id as string)} className="border rounded px-2 py-0.5 text-sm flex-1" />
+              ) : (
+                <span onDoubleClick={() => { setEditingSpecId(s.id as string); setEditingSpecName(s.name as string); }}>{s.name as string}</span>
+              )}
+              <button onClick={() => delSpec(s.id as string)} className="text-red-400 text-xs hover:text-red-600 ml-2">删除</button>
+            </div>
+          ))}
         </div>
+      </div>
+
+      {/* Product list view */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">名称</th><th className="px-3 py-2 text-left">品类</th><th className="px-3 py-2 text-left">规格</th><th className="px-3 py-2 text-left">备注</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
+          <tbody>
+            {allItems.map((item, i) => (
+              <tr key={i} className="border-t hover:bg-gray-50">
+                <td className="px-3 py-2">{item.name as string}</td>
+                <td className="px-3 py-2">{item.category as string}</td>
+                <td className="px-3 py-2">{item.spec as string || '-'}</td>
+                <td className="px-3 py-2 text-gray-500">{item.note as string || '-'}</td>
+                <td className="px-3 py-2 text-center"><button onClick={async () => {
+                  const newName = prompt('商品名称', item.name as string);
+                  if (newName === null) return;
+                  const newNote = prompt('备注', (item.note as string) || '');
+                  if (newNote === null) return;
+                  // Update product name/note
+                  await apiFetch<ApiResp>(`/api/settings/products/${item.product_id}`, { method: 'PUT', body: JSON.stringify({ name: newName, note: newNote }) });
+                  // Update spec name/note if spec exists
+                  if (item.spec_id) {
+                    const newSpecName = prompt('规格名称', item.spec as string);
+                    if (newSpecName !== null) await apiFetch<ApiResp>(`/api/settings/products/specs/${item.spec_id}`, { method: 'PUT', body: JSON.stringify({ name: newSpecName, note: newNote }) });
+                  }
+                  buildAllItems();
+                }} className="text-blue-600 hover:underline text-xs">编辑</button></td>
+              </tr>
+            ))}
+            {allItems.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-400">暂无商品数据</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ─── SUPPLIER MANAGER ─── */
+function SupplierManager() {
+  const [suppliers, setSuppliers] = useState<Record<string, unknown>[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: '', contact_person: '', contact_phone: '', address: '', note: '' });
+
+  const load = useCallback(async () => {
+    const res = await apiFetch<ApiResp>('/api/suppliers');
+    if (res.success && res.data) setSuppliers(res.data as Record<string, unknown>[]);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const submit = async () => {
+    if (!form.name.trim()) { alert('供应商名称不能为空'); return; }
+    if (editingId) {
+      const res = await apiFetch<ApiResp>(`/api/suppliers/${editingId}`, { method: 'PUT', body: JSON.stringify(form) });
+      if (res.success) { setShowForm(false); setEditingId(null); setForm({ name: '', contact_person: '', contact_phone: '', address: '', note: '' }); load(); } else alert(res.error);
+    } else {
+      const res = await apiFetch<ApiResp>('/api/suppliers', { method: 'POST', body: JSON.stringify(form) });
+      if (res.success) { setShowForm(false); setForm({ name: '', contact_person: '', contact_phone: '', address: '', note: '' }); load(); } else alert(res.error);
+    }
+  };
+
+  const startEdit = (s: Record<string, unknown>) => {
+    setEditingId(s.id as string);
+    setForm({ name: s.name as string || '', contact_person: s.contact_person as string || '', contact_phone: s.contact_phone as string || '', address: s.address as string || '', note: s.note as string || '' });
+    setShowForm(true);
+  };
+
+  const deleteSupplier = async (id: string) => {
+    if (!confirm('确认删除此供应商？')) return;
+    const res = await apiFetch<ApiResp>(`/api/suppliers/${id}`, { method: 'DELETE' });
+    if (res.success) load(); else alert(res.error);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center"><h3 className="font-semibold text-gray-700">供应商管理</h3><button onClick={() => { setShowForm(!showForm); setEditingId(null); setForm({ name: '', contact_person: '', contact_phone: '', address: '', note: '' }); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm">{showForm && !editingId ? '取消' : '新增供应商'}</button></div>
+      {showForm && (
+        <div className="bg-white rounded-xl shadow p-5">
+          <h4 className="font-medium text-gray-600 mb-3">{editingId ? '编辑供应商' : '新增供应商'}</h4>
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">供应商名称 *</label><input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">联系人</label><input value={form.contact_person} onChange={e => setForm(f => ({ ...f, contact_person: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">联系电话</label><input value={form.contact_phone} onChange={e => setForm(f => ({ ...f, contact_phone: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">地址</label><input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium text-gray-600 mb-1">备注</label><input value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} className="w-full border rounded-lg px-3 py-2 text-sm" /></div>
+          </div>
+          <div className="flex gap-2 mt-4"><button onClick={submit} className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm">{editingId ? '保存' : '创建'}</button><button onClick={() => { setShowForm(false); setEditingId(null); }} className="bg-gray-200 text-gray-700 px-6 py-2 rounded-lg text-sm">取消</button></div>
+        </div>
+      )}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-gray-50"><th className="px-3 py-2 text-left">名称</th><th className="px-3 py-2 text-left">联系人</th><th className="px-3 py-2 text-left">联系电话</th><th className="px-3 py-2 text-left">备注</th><th className="px-3 py-2 text-center">操作</th></tr></thead>
+          <tbody>
+            {suppliers.map(s => (
+              <tr key={s.id as string} className="border-t hover:bg-gray-50">
+                <td className="px-3 py-2">{s.name as string}</td>
+                <td className="px-3 py-2">{s.contact_person as string || '-'}</td>
+                <td className="px-3 py-2">{s.contact_phone as string || '-'}</td>
+                <td className="px-3 py-2 text-gray-500">{s.note as string || '-'}</td>
+                <td className="px-3 py-2 text-center space-x-1">
+                  <button onClick={() => startEdit(s)} className="text-blue-600 hover:underline text-xs">编辑</button>
+                  <button onClick={() => deleteSupplier(s.id as string)} className="text-red-600 hover:underline text-xs">删除</button>
+                </td>
+              </tr>
+            ))}
+            {suppliers.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-gray-400">暂无供应商数据</td></tr>}
+          </tbody>
+        </table>
       </div>
     </div>
   );

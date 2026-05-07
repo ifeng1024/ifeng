@@ -72,6 +72,16 @@ export async function GET(request: NextRequest) {
     const grossProfit = totalRevenue - totalExpense;
     const grossMargin = totalRevenue > 0 ? ((grossProfit / totalRevenue) * 100).toFixed(1) : '0.0';
 
+    // ---- Today KPIs ----
+    const todayStr = fmt(today);
+    const [todayRevRes, todayExpRes] = await Promise.all([
+      supabase.from('revenue_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).eq('record_date', todayStr),
+      supabase.from('expense_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).eq('expense_date', todayStr),
+    ]);
+    const todayRevenue = (todayRevRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const todayExpense = (todayExpRes.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+    const todayGrossProfit = todayRevenue - todayExpense;
+
     // ---- Weekly KPIs ----
     const [weekRevRes, weekExpRes] = await Promise.all([
       supabase.from('revenue_records').select('amount').in('canteen_id', canteenIds).eq('is_active', true).gte('record_date', fmt(weekStart)).lte('record_date', fmt(weekEnd)),
@@ -250,12 +260,61 @@ export async function GET(request: NextRequest) {
       profit: val.profit.toFixed(2),
     }));
 
+    // ---- Per-canteen KPIs (for COMPANY_MANAGER view) ----
+    const perCanteenKpi: Array<{
+      canteen_id: string;
+      canteen_name: string;
+      today_revenue: number;
+      today_expense: number;
+      today_gross_profit: number;
+      month_revenue: number;
+      month_expense: number;
+      month_gross_profit: number;
+    }> = [];
+
+    if (user.role_code === 'COMPANY_MANAGER' || user.role_code === 'SYSTEM_DEVELOPER') {
+      // Fetch canteen names
+      const { data: canteenNameData } = await supabase.from('canteens').select('id, name').in('id', canteenIds.filter(id => id !== '__none__'));
+      const canteenNameMap = new Map((canteenNameData || []).map((c: Record<string, unknown>) => [c.id as string, c.name as string]));
+
+      for (const cid of canteenIds) {
+        if (cid === '__none__') continue;
+        const cName = canteenNameMap.get(cid) || canteenRevenueMap.get(cid)?.name || '未知';
+
+        const [cTodayRev, cTodayExp, cMonthRev, cMonthExp] = await Promise.all([
+          supabase.from('revenue_records').select('amount').eq('canteen_id', cid).eq('is_active', true).eq('record_date', todayStr),
+          supabase.from('expense_records').select('amount').eq('canteen_id', cid).eq('is_active', true).eq('expense_date', todayStr),
+          supabase.from('revenue_records').select('amount').eq('canteen_id', cid).eq('is_active', true).gte('record_date', fmt(monthStart)).lte('record_date', fmt(monthEnd)),
+          supabase.from('expense_records').select('amount').eq('canteen_id', cid).eq('is_active', true).gte('expense_date', fmt(monthStart)).lte('expense_date', fmt(monthEnd)),
+        ]);
+
+        const tRev = (cTodayRev.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+        const tExp = (cTodayExp.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+        const mRev = (cMonthRev.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+        const mExp = (cMonthExp.data || []).reduce((s: number, r: Record<string, unknown>) => s + Number(r.amount || 0), 0);
+
+        perCanteenKpi.push({
+          canteen_id: cid,
+          canteen_name: cName,
+          today_revenue: tRev,
+          today_expense: tExp,
+          today_gross_profit: tRev - tExp,
+          month_revenue: mRev,
+          month_expense: mExp,
+          month_gross_profit: mRev - mExp,
+        });
+      }
+    }
+
     return NextResponse.json<ApiResponse>({
       success: true,
       data: {
         role_code: user.role_code,
         stall_id: user.role_code === 'STALL_MANAGER' ? user.org_id : null,
         kpi: {
+          today_revenue: todayRevenue.toFixed(2),
+          today_expense: todayExpense.toFixed(2),
+          today_gross_profit: todayGrossProfit.toFixed(2),
           total_revenue: totalRevenue.toFixed(2),
           total_expense: totalExpense.toFixed(2),
           gross_profit: grossProfit.toFixed(2),
@@ -267,6 +326,7 @@ export async function GET(request: NextRequest) {
           month_expense: monthExpense.toFixed(2),
           month_gross_profit: monthGrossProfit.toFixed(2),
         },
+        per_canteen_kpi: perCanteenKpi,
         canteen_comparison,
         stall_ranking,
         revenue_trend,

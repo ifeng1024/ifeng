@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
   const body = (await request.json()) as Record<string, unknown>;
   const {
     canteen_id, expense_date, category, amount, note,
-    stall_id, is_daily_repeat,
+    stall_id, is_daily_repeat, supplier_id,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
   } = body;
 
@@ -158,6 +158,7 @@ export async function POST(request: NextRequest) {
     amount: String(amount),
     note: (note as string) || null,
     stall_id: (stall_id as string) || null,
+    supplier_id: (supplier_id as string) || null,
     is_daily_repeat: is_daily_repeat === true,
     created_by: roleCheck.user.user_id,
   };

@@ -21,7 +21,7 @@ export async function PUT(
   const { id } = await params;
   const body = (await request.json()) as Record<string, unknown>;
   const {
-    canteen_id, expense_date, category, amount, note, stall_id,
+    canteen_id, expense_date, category, amount, note, stall_id, supplier_id,
     product_category_id, product_id, quantity, unit_price, product_spec_id,
   } = body;
 
@@ -52,6 +52,7 @@ export async function PUT(
   if (amount !== undefined) updateData.amount = String(amount);
   if (note !== undefined) updateData.note = (note as string) || null;
   if (stall_id !== undefined) updateData.stall_id = (stall_id as string) || null;
+  if (supplier_id !== undefined) updateData.supplier_id = (supplier_id as string) || null;
 
   if ((category as string) === '食材采购' || (existingRec.category as string) === '食材采购') {
     if (product_category_id !== undefined) updateData.product_category_id = product_category_id as string;

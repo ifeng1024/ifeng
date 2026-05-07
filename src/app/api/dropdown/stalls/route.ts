@@ -20,20 +20,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const canteenId = searchParams.get('canteen_id');
 
-    if (!canteenId) {
-      return NextResponse.json<ApiResponse>(
-        { success: false, error: '食堂ID不能为空' },
-        { status: 400 }
-      );
-    }
-
-    // 校验食堂归属权
-    const accessCheck = await checkCanteenAccess(currentUser, canteenId);
-    if (!accessCheck.ok) return accessCheck.response;
-
     const client = getSupabaseClient();
 
-    // STALL_MANAGER 只能看自己的档口
+    // STALL_MANAGER only sees their own stall
     if (currentUser.role_code === RoleCode.STALL_MANAGER) {
       const { data, error } = await client
         .from('stalls')
@@ -55,11 +44,48 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 其他角色：返回该食堂下所有档口
+    // For other roles: if canteen_id provided, filter by it
+    if (canteenId) {
+      const accessCheck = await checkCanteenAccess(currentUser, canteenId);
+      if (!accessCheck.ok) return accessCheck.response;
+
+      const { data, error } = await client
+        .from('stalls')
+        .select('id, canteen_id, name')
+        .eq('canteen_id', canteenId)
+        .eq('is_active', true)
+        .order('name');
+
+      if (error) {
+        return NextResponse.json<ApiResponse>(
+          { success: false, error: `查询档口失败: ${error.message}` },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json<ApiResponse>({ success: true, data: data || [] });
+    }
+
+    // No canteen_id: return all stalls accessible to the user
+    let canteenIds: string[] = [];
+    if (currentUser.role_code === RoleCode.SYSTEM_DEVELOPER) {
+      const { data } = await client.from('canteens').select('id').eq('is_active', true);
+      canteenIds = (data || []).map((c: { id: string }) => c.id);
+    } else if (currentUser.role_code === RoleCode.COMPANY_MANAGER) {
+      const { data } = await client.from('canteens').select('id').eq('company_id', currentUser.org_id!).eq('is_active', true);
+      canteenIds = (data || []).map((c: { id: string }) => c.id);
+    } else if (currentUser.role_code === RoleCode.CANTEEN_MANAGER) {
+      canteenIds = currentUser.org_id ? [currentUser.org_id] : [];
+    }
+
+    if (canteenIds.length === 0) {
+      return NextResponse.json<ApiResponse>({ success: true, data: [] });
+    }
+
     const { data, error } = await client
       .from('stalls')
       .select('id, canteen_id, name')
-      .eq('canteen_id', canteenId)
+      .in('canteen_id', canteenIds)
       .eq('is_active', true)
       .order('name');
 

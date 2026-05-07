@@ -17,15 +17,18 @@ export async function PUT(
   if (!roleCheck.ok) return roleCheck.response;
 
   const { id } = await params;
-  const body = (await request.json()) as { name?: string };
-  const { name } = body;
+  const body = (await request.json()) as { name?: string; note?: string };
+  const { name, note } = body;
   if (!name) return NextResponse.json<ApiResponse>({ success: false, error: '规格名称为必填项' }, { status: 400 });
 
   const supabase = getSupabaseClient();
 
+  const updateData: Record<string, unknown> = { name, updated_at: new Date().toISOString() };
+  if (note !== undefined) updateData.note = note;
+
   const { data, error } = await supabase
     .from('product_specs')
-    .update({ name, updated_at: new Date().toISOString() })
+    .update(updateData)
     .eq('id', id)
     .eq('is_active', true)
     .select()

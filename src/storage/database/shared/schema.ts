@@ -264,6 +264,28 @@ export const expense_records = pgTable(
 );
 
 /**
+ * 供应商表
+ */
+export const suppliers = pgTable(
+	"suppliers",
+	{
+		id: varchar({ length: 36 }).primaryKey(),
+		companyId: varchar("company_id", { length: 36 }).notNull(),
+		name: varchar({ length: 100 }).notNull(),
+		contactPerson: varchar("contact_person", { length: 50 }),
+		contactPhone: varchar("contact_phone", { length: 20 }),
+		address: varchar({ length: 200 }),
+		note: text(),
+		isActive: boolean("is_active").default(true).notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow(),
+		updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }),
+	},
+	(table) => [
+		index("suppliers_company_id_idx").on(table.companyId),
+	]
+);
+
+/**
  * 固定支出表
  * 由公司负责人预设，支持起始/结束时间，系统自动在日期范围内生成支出记录
  */
@@ -339,6 +361,7 @@ export const products = pgTable(
 		id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
 		category_id: varchar("category_id", { length: 36 }).notNull().references(() => product_categories.id, { onDelete: "cascade" }),
 		name: varchar("name", { length: 128 }).notNull(),
+			note: text("note"),
 		is_active: boolean("is_active").default(true).notNull(),
 		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 		updated_at: timestamp("updated_at", { withTimezone: true }),
@@ -359,6 +382,7 @@ export const product_specs = pgTable(
 		product_id: varchar("product_id", { length: 36 }).notNull().references(() => products.id, { onDelete: "cascade" }),
 		name: varchar("name", { length: 32 }).notNull(),
 		is_active: boolean("is_active").default(true).notNull(),
+			note: text("note"),
 		created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 		updated_at: timestamp("updated_at", { withTimezone: true }),
 	},
